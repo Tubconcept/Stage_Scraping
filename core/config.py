@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import sys
 
@@ -6,7 +5,7 @@ import sys
 CSV_HEADERS = [
     "productRef",
     "EAN",
-    "Ref_fabicant",
+    "Ref_fabricant",
     "cat1",
     "cat2",
     "cat3",
@@ -19,17 +18,17 @@ CSV_HEADERS = [
     "productDocList",
     "productImages",
     "combinationIndex",
-    "productCombinationNames",
-    "productCombinationValues",
+    "productDecliName&Value",
     "isCombination",
     "Parent",
+    "Ref_Decli",
     "productPrice",
     "Eco_Tax",
     "Reduction",
     "Produit liée",
     "stockStatus",
     "CategoryTree",
-    "Declinaison",
+    "ProductUrl",
 ]
 
 # === TEXTE À IGNORER DANS LES LOGS ===
@@ -55,7 +54,8 @@ TIMEOUT_PAGE_LOAD_SEC = TIMEOUT_PAGE_LOAD // 1000
 
 
 # === PAGINATION ===
-DIRECTORY= Path(sys.argv[0]).resolve().parent
+# Always resolve to project root (go up 2 levels from core/ to reach project root)
+DIRECTORY = Path(__file__).resolve().parent.parent
 LOG_DIR = DIRECTORY / "log"
 CSV_DIR = DIRECTORY / "csv"
 JSON_DIR = DIRECTORY / "json"
