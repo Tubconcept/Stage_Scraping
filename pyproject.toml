@@ -14,4 +14,6 @@ dependencies = [
     "playwright>=1.60.0",
     "selenium>=4.44.0",
     "typing>=3.10.0.0",
+    "peewee>=3.17.0",
+    "chromium>=0.0.0",
 ]
