@@ -24,6 +24,7 @@ from scrapers.Prolians_P3.tracking.scraper_prolians_tracking import (
 ROOT = PROJECT_ROOT
 load_dotenv(ROOT / ".env")
 
+
 User     = os.getenv("User_P3")
 Password = os.getenv("Password_P3")
 

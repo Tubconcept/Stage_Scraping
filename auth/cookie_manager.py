@@ -13,7 +13,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from playwright.sync_api import Page, BrowserContext
-from selectors.prolians import Selectors
+from css_selectors.prolians import Selectors
 
 ROOT = Path(__file__).resolve().parents[1]
 _SESSION_FILE = ROOT / "auth" / f"session_{datetime.today().strftime('%Y-%m-%d')}.json"

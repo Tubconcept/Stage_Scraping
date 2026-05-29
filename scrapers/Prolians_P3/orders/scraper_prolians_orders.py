@@ -14,7 +14,7 @@ import re
 import os
 import traceback
 from datetime import datetime
-from selectors.prolians import Selectors
+from css_selectors.prolians import Selectors
 from core.utils import clean_text
 
 BASE_URL = Selectors.BASE_URL

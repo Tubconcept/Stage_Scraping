@@ -19,7 +19,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from auth.cookie_manager import ensure_logged_in, is_logged_in
-from selectors.prolians import Selectors
+from css_selectors.prolians import Selectors
 from scrapers.Prolians_P3.products.scraper_prolians_products import (
     extract_sitemap_urls, extract_product_from_dom,
     FIELDNAMES, SITEMAP_INDEX

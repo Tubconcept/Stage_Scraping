@@ -26,6 +26,7 @@ USERNAME = os.getenv("User", "")
 PASSWORD = os.getenv("Password", "")
 
 
+
 def main():
     if not USERNAME or not PASSWORD:
         print("Identifiants manquants dans .env (User= et Password=)")
