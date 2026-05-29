@@ -96,4 +96,6 @@ PRODUCT_DETAIL: dict = {
     "characteristic_row": "div.carac",
     "variation_characteristics": "div.description2 div.carac",
     "table_wait": "div#tableau-var",
+    "stock_status": "div.mise_en_avant_stock span.texte_stock span.texte",
+    "quantity_input": "input[name='quantite']",
 }

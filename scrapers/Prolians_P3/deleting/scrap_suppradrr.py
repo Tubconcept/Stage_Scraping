@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright, Page
 from datetime import datetime
 from dotenv import load_dotenv
 from selectors.prolians import Selectors
-from auth.cookie_manager import ensure_logged_in
+from auth.prolians.cookie_manager_prolians import ensure_logged_in
 
 load_dotenv(PROJECT_ROOT / ".env")
 

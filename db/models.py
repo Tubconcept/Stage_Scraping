@@ -34,7 +34,7 @@ class SetinProduct(BaseModel):
     conditionnement = CharField(null=True, help_text="Conditionnement")
     product_brand = CharField(null=True, help_text="Marque")
     image_brand = CharField(null=True, help_text="Image marque")
-    product_image = CharField(null=True, help_text="URL image produit")
+    product_image = TextField(null=True, help_text="URLs images produit (URL1, URL2, ...)")
     product_desc = TextField(null=True, help_text="Description")
     product_doc_list = TextField(null=True, help_text="Documentation / liens")
     product_attributes = TextField(null=True, help_text="Caractéristiques")
@@ -46,8 +46,14 @@ class SetinProduct(BaseModel):
     combination_values = CharField(null=True, help_text="Valeurs combinaison")
     parent = CharField(null=True, help_text="Produit parent")
     produit_lie = TextField(null=True, help_text="Produits liés")
-    declinaison = CharField(null=True, help_text="Déclinaison")
+    ref_decli = CharField(null=True, help_text="Refs variantes liées (ref1|ref2|...)")
+    stock_status = CharField(null=True, help_text="Statut stock (non extrait — aucun sélecteur disponible)")
+    category_tree = CharField(null=True, help_text="Arborescence catégories (cat1;cat2;cat3)")
     scraped_at = DateTimeField(default=datetime.now, help_text="Date scraping")
+
+    @property
+    def product_ref(self) -> str | None:
+        return self.ref_product
 
     class Meta:
         table_name = "setin_products"

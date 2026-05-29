@@ -16,7 +16,7 @@ import csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-from auth.cookie_manager import ensure_logged_in
+from auth.prolians.cookie_manager_prolians import ensure_logged_in
 from scrapers.Prolians_P3.orders.scraper_prolians_orders import (
     navigate_to_orders, collect_orders, get_info, log_exception
 )
@@ -107,3 +107,69 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# =============================
+# INTERFACE GUI
+# =============================
+
+import asyncio
+
+
+class ProlianOrderScraper:
+    """Wrapper async du scraper Prolians orders pour la GUI."""
+
+    def __init__(self, date_from: datetime, date_to: datetime):
+        load_dotenv(ROOT / ".env")
+        self._user = os.getenv("User_P3")
+        self._password = os.getenv("Password_P3")
+        self.date_from = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
+        self.date_to = date_to.replace(hour=23, minute=59, second=59, microsecond=0)
+        self._stop_requested = False
+
+    async def run(self):
+        await asyncio.to_thread(self._sync_run)
+
+    def _sync_run(self):
+        run_ts = datetime.today().strftime('%Y-%m-%d_%H-%M')
+        path = str(ROOT / f"csv/scrap_p3_CMD_{run_ts}.csv")
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context()
+            context.set_default_timeout(10000)
+            context.set_default_navigation_timeout(15000)
+            page = context.new_page()
+
+            if not ensure_logged_in(page, context, self._user, self._password):
+                print("Connexion échouée — arrêt.")
+                browser.close()
+                return
+
+            navigate_to_orders(page)
+            init_csv(path)
+
+            today_str = datetime.today().strftime('%Y-%m-%d')
+            orders = collect_orders(page, self.date_from, self.date_to)
+            print(f"{len(orders)} commande(s) trouvée(s)")
+
+            for order in orders:
+                if self._stop_requested:
+                    break
+                try:
+                    data = get_info(page, order)
+                    if data:
+                        append_to_csv(path, data)
+                        print(f"  {order['webref']} -> CSV")
+                except Exception as e:
+                    log_exception(today_str, e, f"Commande {order['webref']}")
+
+            browser.close()
+            print(f"CSV généré : {path}")
+
+    def request_stop(self):
+        self._stop_requested = True
+
+
+def create_scraper(date_from: datetime, date_to: datetime) -> ProlianOrderScraper:
+    return ProlianOrderScraper(date_from=date_from, date_to=date_to)

@@ -18,7 +18,7 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-from auth.cookie_manager import ensure_logged_in, is_logged_in
+from auth.prolians.cookie_manager_prolians import ensure_logged_in, is_logged_in
 from selectors.prolians import Selectors
 from scrapers.Prolians_P3.products.scraper_prolians_products import (
     extract_sitemap_urls, extract_product_from_dom,
@@ -154,3 +154,111 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# =============================
+# INTERFACE GUI
+# =============================
+
+import asyncio
+
+
+class ProlianProductScraper:
+    """Wrapper async du scraper Prolians products pour la GUI."""
+
+    def __init__(self):
+        load_dotenv(ROOT / ".env")
+        self._user = os.getenv("User_P3")
+        self._password = os.getenv("Password_P3")
+        self._stop_requested = False
+
+    async def run(self):
+        await asyncio.to_thread(self._sync_run)
+
+    def _sync_run(self):
+        run_ts = datetime.today().strftime("%Y-%m-%d_%H-%M")
+        csv_file = str(ROOT / f"csv/scrap_p3_PW_{run_ts}.csv")
+        crash_f = str(ROOT / "log/crash_products.txt")
+        os.makedirs(str(ROOT / "csv"), exist_ok=True)
+        os.makedirs(str(ROOT / "log"), exist_ok=True)
+
+        count = 0
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context()
+            context.set_default_timeout(8000)
+            context.set_default_navigation_timeout(20000)
+            page = context.new_page()
+
+            if not ensure_logged_in(page, context, self._user, self._password):
+                print("Impossible de se connecter — arrêt.")
+                browser.close()
+                return
+
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept-Language": "fr-FR,fr;q=0.9",
+            })
+            for c in context.cookies():
+                session.cookies.set(c["name"], c["value"], domain=c.get("domain", ".prolians.fr"))
+
+            sitemap_files = extract_sitemap_urls(session, SITEMAP_INDEX)
+            product_sitemap = next(u for u in sitemap_files if "product" in u)
+            all_product_files = extract_sitemap_urls(session, product_sitemap)
+            product_urls = []
+            for f in all_product_files:
+                product_urls.extend(extract_sitemap_urls(session, f))
+
+            if LIMIT_TEST:
+                product_urls = product_urls[:LIMIT_TEST]
+            print(f"Produits détectés : {len(product_urls)}")
+
+            with open(csv_file, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, FIELDNAMES, delimiter=";", quoting=csv.QUOTE_ALL)
+                writer.writeheader()
+
+                for url in product_urls:
+                    if self._stop_requested:
+                        break
+                    loaded = False
+                    for attempt in range(3):
+                        try:
+                            page.goto(url, wait_until="load", timeout=5000)
+                            page.wait_for_selector(Selectors.title, timeout=5000)
+                            loaded = True
+                            break
+                        except Exception:
+                            print(f"Tentative {attempt+1}/3 échouée : {url}")
+
+                    if not loaded:
+                        with open(crash_f, "a", encoding="utf-8") as cf:
+                            cf.write(url + "\n")
+                        continue
+
+                    if count % 20 == 0 and not is_logged_in(page):
+                        if not ensure_logged_in(page, context, self._user, self._password):
+                            print("Re-login échoué — arrêt.")
+                            break
+                        page.goto(url, wait_until="domcontentloaded", timeout=10000)
+
+                    rows = extract_product_from_dom(page)
+                    if not rows:
+                        with open(crash_f, "a", encoding="utf-8") as cf:
+                            cf.write(url + "\n")
+                        continue
+                    for row in rows:
+                        writer.writerow(row)
+                    f.flush()
+                    count += 1
+                    print(f"[{count}] {rows[0]['productRef']}")
+
+            browser.close()
+            print(f"CSV généré : {csv_file}")
+
+    def request_stop(self):
+        self._stop_requested = True
+
+
+def create_scraper() -> ProlianProductScraper:
+    return ProlianProductScraper()

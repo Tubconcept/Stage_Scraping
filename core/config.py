@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 
-# === COLONNES CSV_Produits ===
+# === COLONNES CSV ===
 CSV_HEADERS = [
     "productRef",
     "EAN",
@@ -13,7 +13,7 @@ CSV_HEADERS = [
     "conditionnement",
     "productAttributes",
     "productBrand",
-    "Image_Brand",
+    "Image Brand",
     "productDesc",
     "productDocList",
     "productImages",
@@ -25,7 +25,7 @@ CSV_HEADERS = [
     "productPrice",
     "Eco_Tax",
     "Reduction",
-    "Produit_liee",
+    "Produit liée",
     "stockStatus",
     "CategoryTree",
     "ProductUrl",
@@ -59,7 +59,8 @@ DIRECTORY = Path(__file__).resolve().parent.parent
 LOG_DIR = DIRECTORY / "log"
 CSV_DIR = DIRECTORY / "csv"
 JSON_DIR = DIRECTORY / "json"
-PROFILES_DIR = DIRECTORY.parent / "playwright_profiles"
-DB_PATH = DIRECTORY.parent / "setin_data.db"
+PROFILES_DIR = DIRECTORY / "playwright_profiles"
+DB_PATH = DIRECTORY / "setin_data.db"
+
 
 VIEWPORT = {"width": 1920, "height": 1080}

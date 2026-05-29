@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from peewee import SqliteDatabase
+from core.config import DB_PATH
 from .models import db, BaseModel, SetinOrder, SetinProduct, SetinTracking
 
 
@@ -63,7 +64,7 @@ def _migrate_if_needed(sqlite_db: SqliteDatabase, model_class) -> None:
 
 
 def init_db(
-    db_path: Path | str = "setin_data.db",
+    db_path: Path | str = DB_PATH,
     extra_models: list = None,
 ) -> SqliteDatabase:
     """Initialise la base de données SQLite et crée les tables.
