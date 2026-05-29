@@ -2,11 +2,11 @@
 from pathlib import Path
 import sys
 
-# === COLONNES CSV ===
+# === COLONNES CSV_Produits ===
 CSV_HEADERS = [
     "productRef",
     "EAN",
-    "Ref_fabicant",
+    "Ref_fabricant",
     "cat1",
     "cat2",
     "cat3",
@@ -14,7 +14,7 @@ CSV_HEADERS = [
     "conditionnement",
     "productAttributes",
     "productBrand",
-    "Image Brand",
+    "Image_Brand",
     "productDesc",
     "productDocList",
     "productImages",
@@ -26,7 +26,7 @@ CSV_HEADERS = [
     "productPrice",
     "Eco_Tax",
     "Reduction",
-    "Produit liée",
+    "Produit_liee",
     "stockStatus",
     "CategoryTree",
     "Declinaison",
@@ -55,10 +55,11 @@ TIMEOUT_PAGE_LOAD_SEC = TIMEOUT_PAGE_LOAD // 1000
 
 
 # === PAGINATION ===
-DIRECTORY= Path(sys.argv[0]).resolve().parent
+DIRECTORY = Path(sys.argv[0]).resolve().parent
 LOG_DIR = DIRECTORY / "log"
 CSV_DIR = DIRECTORY / "csv"
 JSON_DIR = DIRECTORY / "json"
-
+PROFILES_DIR = DIRECTORY.parent / "playwright_profiles"
+DB_PATH = DIRECTORY.parent / "setin_data.db"
 
 VIEWPORT = {"width": 1920, "height": 1080}
