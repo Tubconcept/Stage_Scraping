@@ -118,7 +118,9 @@ def main():
                             page.wait_for_selector(Selectors.title, timeout=5000)
                             loaded = True
                             break
-                        except:
+                        except KeyboardInterrupt:
+                            raise
+                        except Exception:
                             print(f"Tentative {attempt+1}/{max_retries} échouée : {url}")
 
                     if not loaded:

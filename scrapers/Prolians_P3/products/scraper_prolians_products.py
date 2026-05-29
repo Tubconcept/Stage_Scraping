@@ -46,13 +46,13 @@ def extract_sitemap_urls(session, url):
 
 
 # =============================
-# LECTURE REFS + PRIX
-# Lit Code P / Réf. fabricant / Réf. PROLIANS / prix / stock
+# LECTURE REFS + PRIX + EAN + ECO_TAX + REDUCTION
+# Lit Code P / Réf. fabricant / Réf. PROLIANS / prix / stock / EAN / Eco_Tax / Réduction
 # depuis l'état courant de la page (après chaque clic radio).
 # =============================
 
 def _read_refs_and_price(page):
-    code_p = ref_fab = ref_prolians = price = stock = ""
+    code_p = ref_fab = ref_prolians = price = stock = ean = eco_tax = reduction = ""
     try:
         items = page.locator(Selectors.inline_list_item)
         for i in range(items.count()):
@@ -69,6 +69,9 @@ def _read_refs_and_price(page):
             m = re.search(r"Réf\.\s*PROLIANS\s*[: ]\s*(\S+)", text)
             if m:
                 ref_prolians = m.group(1)
+            m = re.search(r"EAN\s*[: ]\s*(\d{8,14})", text, re.IGNORECASE)
+            if m:
+                ean = m.group(1)
     except:
         pass
     try:
@@ -80,7 +83,25 @@ def _read_refs_and_price(page):
             stock = "Disponible"
     except:
         pass
-    return code_p, ref_fab, ref_prolians, price, stock
+    try:
+        eco_elem = page.locator(Selectors.eco_tax)
+        if eco_elem.count() > 0:
+            raw_eco = eco_elem.first.inner_text(timeout=2000)
+            m = re.search(r"([\d,]+)\s*€", raw_eco)
+            if m:
+                eco_tax = m.group(1).replace(",", ".")
+    except:
+        pass
+    try:
+        red_elem = page.locator(Selectors.reduction)
+        if red_elem.count() > 0:
+            raw_red = red_elem.first.inner_text(timeout=2000)
+            m = re.search(r"[-−]?\s*([\d,]+)\s*%", raw_red)
+            if m:
+                reduction = m.group(1).replace(",", ".")
+    except:
+        pass
+    return code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction
 
 
 # =============================
@@ -88,7 +109,7 @@ def _read_refs_and_price(page):
 # =============================
 
 def _extract_declinaisons(page, radios):
-    """Clique chaque radio, récupère le label et la Réf. PROLIANS mise à jour."""
+    """Clique chaque radio, récupère le label et toutes les données mises à jour."""
     declinaisons = []
 
     dim_name = ""
@@ -121,26 +142,29 @@ def _extract_declinaisons(page, radios):
             except:
                 pass
 
+        # Format : "Longueur totale : 50mm" (séparateur " : ")
         if dim_name and variant_val:
             if variant_val.startswith(dim_name):
-                suffix = variant_val[len(dim_name):].strip().lstrip("-").strip()
-                full_label = f"{dim_name} - {suffix}" if suffix else variant_val
+                suffix = variant_val[len(dim_name):].strip().lstrip(":").lstrip("-").strip()
+                full_label = f"{dim_name} : {suffix}" if suffix else variant_val
             else:
-                full_label = f"{dim_name} - {variant_val}"
+                full_label = f"{dim_name} : {variant_val}"
         else:
             full_label = variant_val or f"Déclinaison {i+1}"
 
         try:
             radio.click(timeout=3000)
             page.wait_for_timeout(1000)
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             print(f"    Déclinaison {i+1} — erreur clic : {e}")
             continue
 
-        code_p, ref_fab, ref_prolians, price, stock = _read_refs_and_price(page)
+        code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction = _read_refs_and_price(page)
 
         print(f"    [{i+1}] {full_label}")
-        print(f"          Réf. PROLIANS  : {ref_prolians or '—'}")
+        print(f"          Code P         : {code_p or '—'}")
         print(f"          Réf. fabricant : {ref_fab or '—'}")
         print(f"          Prix           : {price or '—'} €")
 
@@ -151,6 +175,9 @@ def _extract_declinaisons(page, radios):
             "ref_prolians": ref_prolians,
             "price":        price,
             "stock":        stock,
+            "ean":          ean,
+            "eco_tax":      eco_tax,
+            "reduction":    reduction,
         })
 
     return declinaisons
@@ -169,8 +196,12 @@ def extract_product_from_dom(page):
     except:
         print("Pas trouvé, continuer")
         return None
-    code_p_init, ref_fab_init, ref_prolians_init, price_init, stock_init = _read_refs_and_price(page)
-    data["productRef"] = code_p_init
+
+    code_p_init, ref_fab_init, ref_prolians_init, price_init, stock_init, ean_init, eco_tax_init, reduction_init = _read_refs_and_price(page)
+    data["productRef"] = ref_prolians_init
+    data["EAN"]        = ean_init
+    data["Eco_Tax"]    = eco_tax_init
+    data["Reduction"]  = reduction_init
 
     # ---------------- BREADCRUMBS
     try:
@@ -200,7 +231,6 @@ def extract_product_from_dom(page):
             conditionnement = m.group(1)
     except:
         pass
-
     data["conditionnement"] = conditionnement
 
     # ---------------- ATTRIBUTES
@@ -220,7 +250,6 @@ def extract_product_from_dom(page):
         data["productBrand"] = page.locator(Selectors.brand_name).inner_text()
     except:
         pass
-
     try:
         data["Image_Brand"] = page.locator(Selectors.brand_image).first.get_attribute("src")
     except:
@@ -234,7 +263,6 @@ def extract_product_from_dom(page):
             page.wait_for_timeout(300)
     except:
         pass
-
     try:
         data["productDesc"] = page.locator(Selectors.description_content).inner_html()
     except:
@@ -278,7 +306,7 @@ def extract_product_from_dom(page):
     try:
         radios = page.locator(Selectors.combinations)
         if radios.count() > 0:
-            # Produit avec variantes — prix/stock/refs lus par variante après chaque clic
+            # Produit avec variantes — une ligne CSV par déclinaison
             data["isCombination"] = "True"
             all_values = [radios.nth(i).get_attribute("value") for i in range(radios.count())]
             data["Parent"] = code_p_init
@@ -289,18 +317,23 @@ def extract_product_from_dom(page):
                 row = dict(data)
                 row["combinationIndex"]       = idx
                 row["productDecliName&Value"] = decli["label"]
-                row["productRef"]             = decli["code_p"] or code_p_init
-                row["Ref_fabricant"]          = decli["ref_fab"]
-                row["Ref_Decli"]              = decli["ref_prolians"]
+                row["productRef"]             = decli["ref_prolians"] or ref_prolians_init
+                row["Ref_fabricant"]          = decli["ref_fab"] or ref_fab_init
+                row["EAN"]                    = decli["ean"] or ean_init
+                row["Eco_Tax"]                = decli["eco_tax"] or eco_tax_init
+                row["Reduction"]              = decli["reduction"] or reduction_init
+                # Ref_Decli = même valeur que productRef (Code P de la déclinaison)
+                row["Ref_Decli"]              = decli["code_p"] or code_p_init
                 row["productPrice"]           = decli["price"]
                 row["stockStatus"]            = decli["stock"]
                 row["ProductUrl"]             = page.url
                 rows.append(row)
         else:
-            # Produit simple — utilise les refs lues au chargement initial
+            # Produit simple
             data["isCombination"]  = "False"
             data["Ref_fabricant"]  = ref_fab_init
-            data["Ref_Decli"]      = ref_prolians_init
+            # Ref_Decli = même valeur que productRef (Code P)
+            data["Ref_Decli"]      = code_p_init
             data["productPrice"]   = price_init
             data["stockStatus"]    = stock_init
             data["ProductUrl"]     = page.url
