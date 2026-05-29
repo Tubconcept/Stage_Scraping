@@ -25,8 +25,6 @@ from auth.cookie_manager import ensure_logged_in, _SESSION_FILE
 USERNAME = os.getenv("User", "")
 PASSWORD = os.getenv("Password", "")
 
-
-
 def main():
     if not USERNAME or not PASSWORD:
         print("Identifiants manquants dans .env (User= et Password=)")

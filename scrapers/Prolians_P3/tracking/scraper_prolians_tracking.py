@@ -15,7 +15,7 @@ import os
 import traceback
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
-from css_selectors.prolians import Selectors
+from selectors.prolians import Selectors
 from core.utils import clean_text
 
 BASE_URL = Selectors.BASE_URL

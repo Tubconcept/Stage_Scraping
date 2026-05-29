@@ -14,7 +14,7 @@ import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from css_selectors.prolians import Selectors
+from selectors.prolians import Selectors
 from core.config import CSV_HEADERS
 
 today         = datetime.today().strftime("%Y-%m-%d")

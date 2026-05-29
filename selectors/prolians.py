@@ -61,6 +61,7 @@ class Selectors:
     product_ref_xpath      = "//span[contains(., 'Réf. PROLIANS :')]" 
     prodcut_qty_xpath      = "//p[contains(., 'Qt :')]"
 
+
     # Sélecteurs CSS pour extraction robuste
     product_ref            = "span[class*='reference']"  # Fallback CSS selector
     product_qty            = "p"  # Fallback CSS selector

@@ -16,7 +16,7 @@ import csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-from auth.cookie_manager import ensure_logged_in
+from auth.prolians.cookie_manager_prolians import ensure_logged_in
 from scrapers.Prolians_P3.orders.scraper_prolians_orders import (
     navigate_to_orders, collect_orders, get_info, log_exception
 )
@@ -107,6 +107,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
