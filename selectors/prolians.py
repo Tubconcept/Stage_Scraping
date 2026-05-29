@@ -65,3 +65,6 @@ class Selectors:
     # suivi transporteur
     tracking_blocks        = "div.blocks .block"
     tracking_colis         = "div.colis div.block div.title"
+
+ #   $ git config --global user.name "John Doe"
+# $ git config --global user.email johndoe@example.com
