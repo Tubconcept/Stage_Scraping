@@ -21,6 +21,7 @@ class Selectors:
 
 
     # ================= page de détail produit ===================
+    # Contient : Code P (productRef), EAN, Réf. fabricant, Réf. PROLIANS
     inline_list_item    = "div[data-testid='inline-list-item']"
     title               = 'h1[data-testid="title"]'
     conditionnement     = "span.text-sm.font-medium.text-brand-2-800"
@@ -34,6 +35,8 @@ class Selectors:
     image_fallback      = '[data-testid="product-cloudflare-picture/image"]'
     price               = '[data-testid="product-price/price"] span'
     price_message       = '[data-testid="product-price-message"]'
+    eco_tax             = '[data-testid="product-price/eco-participation"]'
+    reduction           = '[data-testid="product-price/discount"]'
     combinations        = '[role="radiogroup"] input'
 
     # =============== commandes =================
