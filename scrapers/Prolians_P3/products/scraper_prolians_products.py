@@ -222,7 +222,7 @@ def extract_product_from_dom(page):
         pass
 
     try:
-        data["Image Brand"] = page.locator(Selectors.brand_image).first.get_attribute("src")
+        data["Image_Brand"] = page.locator(Selectors.brand_image).first.get_attribute("src")
     except:
         pass
 
@@ -282,7 +282,7 @@ def extract_product_from_dom(page):
             data["isCombination"] = "True"
             all_values = [radios.nth(i).get_attribute("value") for i in range(radios.count())]
             data["Parent"] = code_p_init
-            data["Produit liée"] = ",".join(v for v in all_values if v)
+            data["Produit_liee"] = ",".join(v for v in all_values if v)
 
             declinaisons = _extract_declinaisons(page, radios)
             for idx, decli in enumerate(declinaisons, start=1):

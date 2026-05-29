@@ -6,7 +6,6 @@ CSV_HEADERS = [
     "productRef",
     "EAN",
     "Ref_fabricant",
-    "Ref_fabricant",
     "cat1",
     "cat2",
     "cat3",

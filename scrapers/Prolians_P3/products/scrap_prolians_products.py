@@ -100,18 +100,6 @@ def main():
         print(f" Produits détectés : {len(product_urls)}")
 
         # -------- CSV
-        start_url = input("URL produit de départ (Entrée pour début) : ").strip()
-        skip_mode = bool(start_url)
-
-        if skip_mode:
-            try:
-                start_index = product_urls.index(start_url)
-                product_urls = product_urls[start_index:]
-                print(f" Reprise à l'index {start_index}")
-            except ValueError:
-                print("URL non trouvée dans la sitemap")
-                sys.exit(1)
-
         print(f"\n CSV : {csv_file}")
         file_exists = os.path.isfile(csv_file)
 
