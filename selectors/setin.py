@@ -1,78 +1,99 @@
+"""Sélecteurs CSS/Playwright et constantes pour le site Setin (www.setin.fr)."""
 
-class Selectors:
-    """Centralise tous les sélecteurs CSS pour le site Setin."""
-    
-    # ========== CONNEXION ==========
-    ACCOUNT_LINK = "div#picto-compte-header a" #150
-    EMAIL_INPUT = "Votre email" #151
-    PASSWORD_INPUT = "Mot de passe" #152
-    LOGIN_BUTTON = "form[name='form_compte'] a.jqBtnConnection" #153
-    # USER_INFO selector removed (not used in scrapers)
-    RETURN_BUTTON = "div.retourBouton a" #535
+BASE_URL: str = "https://www.setin.fr/"
 
-    # ========== CATÉGORIES ==========
-    MENU_PRODUCTS = "li#menu-produits a.boutonHautLien.d-block" #160
-    CATEGORY_LEVEL_1 = "ul.category_niv1 li[aria-label=\"{}\"] a" #161
-    CATEGORY_LEVEL_2 = "ul.category_niv2.active a" #167
-    CATEGORY_LEVEL_3 = "ul.category_niv3.active li:not(.voir_tout_souscategorie) a" #172
-    
-    # ========== BREADCRUMB (ARIANE) ==========
-    BREADCRUMB_CONTAINER = "div.fil_ariane_fond .ariane-thematique-link" # #191
+CATEGORY_NAMES: list[str] = [
+    "Equipement de la porte, fenêtre et portail",
+    "Verrouillage et sécurité",
+    "Quincaillerie générale de bâtiment",
+    "Quincaillerie d'agencement et d'ameublement",
+    "Consommables",
+    "Outillage à main",
+    "Outils de coupe",
+    "Hygiène Sécurité Protection",
+    "Equipements d'atelier et de chantier",
+    "Electricité",
+    "Plomberie",
+    "Promium - Une marque du groupe Setin",
+]
 
-    # ========== PAGINATION ==========
-    PAGINATION_BUTTON = "button.jq-pagination" #415
+LOGIN: dict[str, str] = {
+    "home_return_button": "div.retourBouton a",
+    "account_icon": "div#picto-compte-header a",
+    "email_placeholder": "Votre email",
+    "password_placeholder": "Mot de passe",
+    "submit": "form[name='form_compte'] a.jqBtnConnection",
+    # Présent uniquement si l'utilisateur est connecté — utilisé pour détecter la session active
+    "user_info": "div.info-perso",
+    "page_loader": "div#loaderPage",
+}
 
-    # ========== PRODUITS LISTING ==========
-    PRODUCT_BOX = "div.product_box" #433
-    PRODUCT_BOX_IMAGE_LINK = "div.product_box div.bp_image a" #434
+NAVIGATION: dict[str, str] = {
+    "menu_products": "li#menu-produits a.boutonHautLien.d-block",
+    "category_level1": 'ul.category_niv1 li[aria-label="{category}"] a',
+    "category_level2": "ul.category_niv2.active a",
+    "category_level3": "ul.category_niv3.active li:not(.voir_tout_souscategorie) a",
+    "breadcrumb": "div.fil_ariane_fond .ariane-thematique-link",
+    "pagination_next": "button.jq-pagination",
+    "product_box_link": "div.product_box div.bp_image a",
+}
 
-    # ========== TABLEAU DE VARIATIONS ==========
-    TABLE_CONTAINER = "div#fiche_article_annexe div.hide-for-small-only div#tableau-var" #459
-    TABLE_ROW = "div.ligne_tableau" #460
-    TABLE_ROW_OPENED_CLASS = "ligne_ouverte" #470
-    DETAIL_BUTTON = "a.bouton_detail_var" #471
-    
-    # ========== TITRE & RÉFÉRENCE ==========
-    TITLE_VARIATION = "div.titre_variation" #234
-    REF_VARIATION = "div.variante_ref span.ref_var" #240
-    
-    # ========== PRIX & TAXES ==========
-    PRICE_CONTAINER = "div.prix_unitaire" #251
-    PRICE_VAR = "div.prix_unitaire span.prix_var" #251
-    PRICE_REDUCED = "div.prix_unitaire span.barrer_prix:not(.hide) span" #258
-    ECO_TAX = "div.prix_unitaire span.tableau_var_eco_taxe.fa_ecotaxe span" #267
+ORDERS: dict[str, str] = {
+    # URL du backoffice commandes client
+    "orders_url": "dhtml/commande_setin.php",
 
-    # ========== IMAGE PRODUIT ==========
-    PRODUCT_IMAGE = "div.photo_variante img" #274
+    # Liste des commandes
+    "order_row": "div.row.commande",
+    "order_link": "div.listing-setin-ligne-1 div.listing-setin-label a",
+    "order_date": "div.listing-setin-ligne-1 div.listing-setin-valeur",
+    "order_status": "div.listing-setin-ligne-2 div.listing-setin-valeur font",
+    "order_tracking": "div.listing-setin-ligne-3 span.listing-setin-valeur a",
+    "order_reliquat": "div.listing-setin-ligne-4 div.listing-setin-valeur",   # TODO: vérifier sur la page
+    # ID dynamique pour la réf interne : f"div#ordernum_BXXXXX"
+    "order_ref_template": "div#ordernum_{ref_px}",
 
-    # ========== MARQUE ==========
-    BRAND_CONTAINER = "div#fiche_article_head div.entete_marque img" #280
-    
-    # ========== DOCUMENTS ==========
-    DOCUMENT_LINKS = "div.entete-download a" #288
+    # Pagination commandes (Oasis — changeOrders(), pas jq-pagination produits)
+    "orders_pagination": ".oasis-pagination",
+    "pagination_next": "a.pagination-next.chevron-pagination:not(.disable)",
+    "pagination_current": ".actual-pagination.highlight",
 
-    # ========== CONDITIONNEMENT ==========
-    CONDITIONNEMENT_SELECTORS = [
-        "div.loaded_quantity div.without_suremballage:not(.hide) div.no-padding a.active", #211
-        "div.loaded_quantity div.without_suremballage:not(.hide) div.no-padding", #212 
-        "div.loaded_quantity div.with_suremballage:not(.hide) div.no-padding a.active", #213
-        "div.loaded_quantity div.with_suremballage:not(.hide) div.no-padding", #214
-    ]
+    # Page détail produit de la commande
+    "product_articles": ".listing-setin-articles",
+    "product_label": "div.row div.listing-setin-label",
+    "product_text": "div.row div.listing-setin-texte",
+    "product_value": "div.row div.listing-setin-valeur",
 
-    # ========== DÉTAILS PRODUIT ==========
-    DETAIL_CONTAINER = "div.detail_var_{row_id}:not(.id_var_{row_id})" #311
-    EAN_CODE = "span.code_ean span.code_ean_value" #313
-    SUPPLIER_REF = "span.ref_fournisseur span.ref_fournisseur_value" #314
+    # Champs supplémentaires sur la page détail (suivi)
+    # TODO: vérifier ces sélecteurs sur la page de détail commande
+    "detail_weight": "span.poids-expedition",
+    "detail_reliquat": "span.date-reliquat",
+}
 
-    # ========== DESCRIPTIONS ==========
-    ARTICLE_DESCRIPTION_SHORT = "div.article_description_courte" #320
-    VARIANT_DESCRIPTION_SHORT = "div.variante_description_courte" #323
-    DESCRIPTION_LONG = "div#div_description_longue" #329
-    CHARACTERISTIC = "div#div_description_longue div.carac" #330
-
-    # ========== DÉCLINAISONS ==========
-    COMBINATION_DESCRIPTION = "div.description2 div.carac" #343
-
-    # ========== GESTION ADRESSES (suppr_Addr.py) ==========
-    ADDRESS_LIST_CONTAINER = "div#jqListAdresse div.itemAddress" #57
-    ADDRESS_BUTTON_SHRINK = "div.medium-shrink" #58
+PRODUCT_DETAIL: dict = {
+    "product_table": "div#fiche_article_annexe div.hide-for-small-only div#tableau-var",
+    "product_row": "div.ligne_tableau",
+    "row_detail_button": "a.bouton_detail_var",
+    "row_title": "div.titre_variation",
+    "row_ref": "div.variante_ref span.ref_var",
+    "row_image": "div.photo_variante img",
+    "unit_price": "div.prix_unitaire span.prix_var",
+    "strikethrough_price": "div.prix_unitaire span.barrer_prix:not(.hide) span",
+    "eco_tax": "div.prix_unitaire span.tableau_var_eco_taxe.fa_ecotaxe span",
+    "brand_image": "div#fiche_article_head div.entete_marque img",
+    "doc_links": "div.entete-download a",
+    "packaging_selectors": [
+        "div.loaded_quantity div.without_suremballage:not(.hide) div.no-padding a.active",
+        "div.loaded_quantity div.without_suremballage:not(.hide) div.no-padding",
+        "div.loaded_quantity div.with_suremballage:not(.hide) div.no-padding a.active",
+        "div.loaded_quantity div.with_suremballage:not(.hide) div.no-padding",
+    ],
+    "detail_panel_template": "div.detail_var_{row_id}:not(.id_var_{row_id})",
+    "ean_value": "span.code_ean span.code_ean_value",
+    "supplier_ref": "span.ref_fournisseur span.ref_fournisseur_value",
+    "short_desc_article": "div.article_description_courte",
+    "short_desc_variant": "div.variante_description_courte",
+    "long_description": "div#div_description_longue",
+    "characteristic_row": "div.carac",
+    "variation_characteristics": "div.description2 div.carac",
+    "table_wait": "div#tableau-var",
+}
