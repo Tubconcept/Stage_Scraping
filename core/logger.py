@@ -1,7 +1,7 @@
 import logging
 import traceback
 from datetime import datetime
-from config import LOG_DIR, IGNORED_ERRORS
+from core.config import LOG_DIR, IGNORED_ERRORS
 
 
 def setup_logger(name: str) -> logging.Logger:
