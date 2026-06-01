@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 
 # === COLONNES CSV ===
+"""
 CSV_HEADERS = [
     "productRef",
     "EAN",
@@ -29,6 +30,37 @@ CSV_HEADERS = [
     "stockStatus",
     "CategoryTree",
     "ProductUrl",
+]
+"""
+
+# === COLONNES CSV ===
+CSV_HEADERS = [
+    "product_fournisseur",
+    "product_reference_fournisseur",
+    "product_ean",
+    "product_reference_fabricant",
+    "product_brand",
+    "product_brand_logo_url",
+    "product_designation",
+    "product_description",
+    "product_image_url",
+    "product_docs_url",
+    "product_category_tree",
+    "product_conditionnement",
+    "product_stock_status",
+    "product_status",
+    "product_fournisseur_url",
+    "product_eco_label",
+    "product_eco_taxe",
+    "product_promotion",
+    "product_price_ht",
+    "product_attributes",
+    "products_is_combination",
+    "product_combination_index",
+    "product_parent_reference",
+    "product_child_reference",
+    "product_combination_values",
+    "product_cross_sell",
 ]
 
 # === TEXTE À IGNORER DANS LES LOGS ===
