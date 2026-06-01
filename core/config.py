@@ -2,38 +2,6 @@ from pathlib import Path
 import sys
 
 # === COLONNES CSV ===
-"""
-CSV_HEADERS = [
-    "productRef",
-    "EAN",
-    "Ref_fabricant",
-    "cat1",
-    "cat2",
-    "cat3",
-    "productTitle",
-    "conditionnement",
-    "productAttributes",
-    "productBrand",
-    "Image Brand",
-    "productDesc",
-    "productDocList",
-    "productImages",
-    "combinationIndex",
-    "productDecliName&Value",
-    "isCombination",
-    "Parent",
-    "Ref_Decli",
-    "productPrice",
-    "Eco_Tax",
-    "Reduction",
-    "Produit liée",
-    "stockStatus",
-    "CategoryTree",
-    "ProductUrl",
-]
-"""
-
-# === COLONNES CSV ===
 CSV_HEADERS = [
     "product_fournisseur",
     "product_reference_fournisseur",
