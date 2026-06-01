@@ -1,0 +1,65 @@
+{
+  "cookies": [
+    {
+      "name": "PHPSESSID",
+      "value": "b8fd62e1f4a4965d4d6be09da4ab156b",
+      "domain": ".setin.fr",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "visite",
+      "value": "56a3de51e95523bc3f2ee63bf264bc97",
+      "domain": "www.setin.fr",
+      "path": "/",
+      "expires": 1811160420.366848,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "wesckdsc",
+      "value": "ZGlzbW9kZT00OlBVQj0wLFNUQVQ9MCxQRVJTTz0wLFNFQ1U9MCxURUNIPTAsR0VOX0FUPTIwMjYtMDUtMjkgMTQ6MDY6NDE%3D",
+      "domain": "www.setin.fr",
+      "path": "/",
+      "expires": 1814270801.598932,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "customerId",
+      "value": "811856",
+      "domain": "www.setin.fr",
+      "path": "/",
+      "expires": 1780920411.451199,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "connexion_reussie",
+      "value": "9c339a4ed1219c258aaa68363cd1b715a3765160f67b3f0574e9c622035230c9",
+      "domain": ".www.setin.fr",
+      "path": "/",
+      "expires": 1795608411.451277,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://www.setin.fr",
+      "localStorage": [
+        {
+          "name": "algoliasearch-client-js",
+          "value": "{}"
+        }
+      ]
+    }
+  ]
+}
