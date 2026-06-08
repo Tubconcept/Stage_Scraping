@@ -1,0 +1,415 @@
+﻿"""
+Moteur d'extraction DOM Prolians (mode : produits).
+
+Responsabilités :
+- Téléchargement et parsing des sitemaps XML (index + URLs produit) ;
+- Lecture des références, prix, stock, EAN, éco-participation sur la fiche ;
+- Gestion des déclinaisons (boutons radio) : une ligne de données par variante ;
+- Construction des dictionnaires alignés sur ``CSV_HEADERS`` / schéma SQLite.
+
+L'orchestration Playwright, login et persistance sont dans ``scrap_prolians_products.py``.
+"""
+import sys
+from pathlib import Path
+
+# --- Racine projet ---
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import re
+import requests
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from css_selectors.prolians import Selectors
+from core.config import CSV_HEADERS
+
+today         = datetime.today().strftime("%Y-%m-%d")
+BASE_URL      = Selectors.BASE_URL
+SITEMAP_INDEX = Selectors.SITEMAP_INDEX
+
+FIELDNAMES = CSV_HEADERS
+
+
+# =============================
+# SITEMAP
+# =============================
+
+def extract_sitemap_urls(session, url):
+    """
+    Récupère les URLs enfants d'un sitemap Prolians.
+
+    - ``sitemapindex`` : liste de sous-fichiers .xml ;
+    - ``urlset``       : liste d'URLs produit finales.
+    """
+    r = session.get(url)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    urls = []
+
+    if root.tag.endswith("sitemapindex"):
+        for sm in root.findall("ns:sitemap", ns):
+            urls.append(sm.find("ns:loc", ns).text)
+    else:
+        for u in root.findall("ns:url", ns):
+            urls.append(u.find("ns:loc", ns).text)
+
+    return urls
+
+
+# =============================
+# LECTURE REFS + PRIX + EAN + ECO_TAX + REDUCTION
+# Lit Code P / Réf. fabricant / Réf. PROLIANS / prix / stock / EAN / Eco_Tax / Réduction
+# depuis l'état courant de la page (après chaque clic radio).
+# =============================
+
+def _read_refs_and_price(page):
+    """
+    Lit l'état courant de la fiche (après clic sur une déclinaison éventuelle).
+
+    Les références sont souvent regroupées dans des ``inline_list_item`` ;
+    le prix et le stock dépendent des sélecteurs ``price`` / ``price_message``.
+    """
+    code_p = ref_fab = ref_prolians = price = stock = ean = eco_tax = reduction = ""
+    try:
+        # Agrège le texte de tous les blocs « liste inline » pour les regex
+        items = page.locator(Selectors.inline_list_item)
+        full_text = ""
+        for i in range(items.count()):
+            try:
+                text = items.nth(i).inner_text(timeout=3000).strip()
+                full_text += " " + text
+            except:
+                continue
+
+        # Parse les références
+        m = re.search(r"Code P\s*[: ]\s*(\S+)", full_text)
+        if m:
+            code_p = m.group(1)
+        m = re.search(r"Réf\.\s*fabricant\s*[: ]\s*(\S+)", full_text)
+        if m:
+            ref_fab = m.group(1)
+        m = re.search(r"Réf\.\s*PROLIANS\s*[: ]\s*(\S+)", full_text)
+        if m:
+            ref_prolians = m.group(1)
+        m = re.search(r"EAN\s*[: ]\s*(\d{8,14})", full_text, re.IGNORECASE)
+        if m:
+            ean = m.group(1)
+    except:
+        pass
+    try:
+        try:
+            page.wait_for_selector(Selectors.price, timeout=3000)
+        except:
+            pass
+
+        # Message « prix sur demande » ou indisponible → pas de prix affiché
+        if page.locator(Selectors.price_message).count() > 0:
+            stock = "non disponible"
+        else:
+            elems = page.locator(Selectors.price)
+            if elems.count() > 0:
+                raw = elems.first.inner_text(timeout=2000)
+                if raw and "€" in raw:
+                    price = raw.replace("€", "").replace(",", ".").split()[0]
+                    stock = "disponible"
+            if not stock:
+                stock = "non disponible"
+    except:
+        pass
+    try:
+        eco_elem = page.locator(Selectors.eco_tax)
+        if eco_elem.count() > 0:
+            raw_eco = eco_elem.first.inner_text(timeout=2000)
+            m = re.search(r"([\d,]+)\s*€", raw_eco)
+            if m:
+                eco_tax = m.group(1).replace(",", ".")
+    except:
+        pass
+    try:
+        red_elem = page.locator(Selectors.reduction)
+        if red_elem.count() > 0:
+            raw_red = red_elem.first.inner_text(timeout=2000)
+            m = re.search(r"[-−]?\s*([\d,]+)\s*%", raw_red)
+            if m:
+                reduction = m.group(1).replace(",", ".")
+    except:
+        pass
+    return code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction
+
+
+# =============================
+# DÉCLINAISONS
+# =============================
+
+def _extract_declinaisons(page, radios):
+    """Clique chaque radio, récupère le label et toutes les données mises à jour."""
+    declinaisons = []
+
+    dim_name = ""
+    try:
+        rg = page.locator('[role="radiogroup"]').first
+        dim_name = (rg.get_attribute("aria-label") or "").strip()
+    except:
+        pass
+
+    for i in range(radios.count()):
+        radio = radios.nth(i)
+
+        variant_val = ""
+        try:
+            rid = radio.get_attribute("id") or ""
+            if rid:
+                lbl = page.locator(f"label[for='{rid}']")
+                if lbl.count() > 0:
+                    variant_val = lbl.inner_text(timeout=3000).strip()
+        except:
+            pass
+        if not variant_val:
+            try:
+                variant_val = (radio.get_attribute("aria-label") or "").strip()
+            except:
+                pass
+        if not variant_val:
+            try:
+                variant_val = (radio.get_attribute("value") or "").strip()
+            except:
+                pass
+
+        # Format : "Longueur totale : 50mm" (séparateur " : ")
+        if dim_name and variant_val:
+            if variant_val.startswith(dim_name):
+                suffix = variant_val[len(dim_name):].strip().lstrip(":").lstrip("-").strip()
+                full_label = f"{dim_name} : {suffix}" if suffix else variant_val
+            else:
+                full_label = f"{dim_name} : {variant_val}"
+        else:
+            full_label = variant_val or f"Déclinaison {i+1}"
+
+        try:
+            radio.click(timeout=3000)
+            page.wait_for_timeout(1000)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"    Déclinaison {i+1} — erreur clic : {e}")
+            continue
+
+        code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction = _read_refs_and_price(page)
+
+        print(f"    [{i+1}] {full_label}")
+        print(f"          Code P         : {code_p or '—'}")
+        print(f"          Réf. fabricant : {ref_fab or '—'}")
+        print(f"          Prix           : {price or '—'} €")
+
+        declinaisons.append({
+            "label":        full_label,
+            "code_p":       code_p,
+            "ref_fab":      ref_fab,
+            "ref_prolians": ref_prolians,
+            "price":        price,
+            "stock":        stock,
+            "ean":          ean,
+            "eco_tax":      eco_tax,
+            "reduction":    reduction,
+        })
+
+    return declinaisons
+
+
+# =============================
+# DOM EXTRACTION
+# =============================
+
+def extract_product_from_dom(page):
+    """
+    Extrait une ou plusieurs lignes produit depuis la page Playwright courante.
+
+    Retourne une liste de dicts (une entrée par déclinaison) ou ``None`` si la
+    fiche est illisible (sélecteur références absent).
+    """
+    data = {k: "" for k in FIELDNAMES}
+
+    # --------------- FOURNISSEUR (identifiant interne Tubconcept)
+    data["product_fournisseur"] = "P3"
+
+    # ---------------- REF
+    try:
+        page.wait_for_selector(Selectors.inline_list_item, timeout=5000)
+    except:
+        print("Pas trouvé, continuer")
+        return None
+
+    code_p_init, ref_fab_init, ref_prolians_init, price_init, stock_init, ean_init, eco_tax_init, reduction_init = _read_refs_and_price(page)
+    data["product_reference_fournisseur"] = ref_prolians_init
+    data["product_ean"]                   = ean_init
+    data["product_eco_taxe"]              = eco_tax_init
+    data["product_promotion"]             = reduction_init
+
+    # ---------------- BREADCRUMBS
+    try:
+        crumbs = page.locator(Selectors.breadcrumb)
+        count = crumbs.count()
+        # Ignore accueil + 1er niveau ; garde jusqu'à 3 catégories feuilles
+        cats = [crumbs.nth(i).inner_text() for i in range(2, min(count, 5))]
+        data["product_category_tree"] = "||".join(cats)
+    except:
+        pass
+
+    # ---------------- TITLE
+    try:
+        data["product_designation"] = page.locator(Selectors.title).first.inner_text()
+    except:
+        pass
+
+    # ---------------- CONDITIONNEMENT
+    try:
+        page.wait_for_selector(Selectors.conditionnement, timeout=5000)
+        cond_text = page.locator(Selectors.conditionnement).first.inner_text().strip()
+        m = re.search(r"(\d+)", cond_text)
+        if m:
+            data["product_conditionnement"] = m.group(1)
+    except:
+        pass
+
+    # ---------------- ATTRIBUTES
+    try:
+        attrs = []
+        rows = page.locator(Selectors.attributes_row)
+        for i in range(rows.count()):
+            tds = rows.nth(i).locator("td")
+            if tds.count() >= 2:
+                attrs.append(f"{tds.nth(0).inner_text()}={tds.nth(1).inner_text()}")
+        data["product_attributes"] = "||".join(attrs)
+    except:
+        pass
+
+    # ---------------- BRAND
+    try:
+        data["product_brand"] = page.locator(Selectors.brand_name).inner_text()
+    except:
+        pass
+    try:
+        data["product_brand_logo_url"] = page.locator(Selectors.brand_image).first.get_attribute("src")
+    except:
+        pass
+
+    # ---------------- DESCRIPTION
+    try:
+        btn = page.locator(Selectors.description_button)
+        if btn.count() > 0:
+            btn.first.click()
+            page.wait_for_timeout(300)
+    except:
+        pass
+    try:
+        data["product_description"] = page.locator(Selectors.description_content).inner_html()
+    except:
+        pass
+
+    # ---------------- DOCUMENTS
+    try:
+        docs = page.locator(Selectors.documents)
+        doc_urls = [docs.nth(i).get_attribute("href") for i in range(docs.count())]
+        data["product_docs_url"] = "||".join(u for u in doc_urls if u)
+    except:
+        pass
+
+    # ---------------- IMAGES
+    try:
+        swiper_slides = page.locator(Selectors.image_swiper)
+        if swiper_slides.count() > 0:
+            srcs = []
+            for i in range(swiper_slides.count()):
+                img = swiper_slides.nth(i)
+                src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+                # Normalise la résolution miniatures pour URLs stables
+                src = re.sub(r'width=\d+', 'width=600', src)
+                if src and src not in srcs:
+                    srcs.append(src)
+            data["product_image_url"] = "||".join(srcs)
+        else:
+            imgs = page.locator(Selectors.image_fallback)
+            srcs = []
+            for i in range(imgs.count()):
+                src = imgs.nth(i).get_attribute("src") or ""
+                src = re.sub(r'width=\d+', 'width=600', src)
+                if src and src not in srcs:
+                    srcs.append(src)
+            data["product_image_url"] = "||".join(srcs)
+    except:
+        pass
+
+    # ---------------- CROSS-SELL (produits similaires)
+    try:
+        cross_refs = page.locator(Selectors.cross_sell_ref)
+        refs = set()
+        for i in range(cross_refs.count()):
+            txt = cross_refs.nth(i).inner_text().strip()
+            m = re.search(r'Réf\.\s*(\S+)', txt)
+            if m:
+                ref = m.group(1)
+                if ref and ref != data.get("product_reference_fournisseur"):
+                    refs.add(ref)
+        if refs:
+            data["product_cross_sell"] = "||".join(sorted(refs))
+    except:
+        pass
+
+    # ---------------- ECO-LABELS
+    try:
+        eco_labels = page.locator(Selectors.eco_labels)
+        labels = set()
+        for i in range(eco_labels.count()):
+            alt = eco_labels.nth(i).get_attribute("alt") or ""
+            title = eco_labels.nth(i).get_attribute("title") or ""
+            label = alt or title
+            if label and "eco" in label.lower():
+                labels.add(label.strip())
+        if labels:
+            data["product_eco_label"] = "||".join(sorted(labels))
+    except:
+        pass
+
+    # ---------------- COMBINATIONS / DÉCLINAISONS
+    rows = []
+    try:
+        radios = page.locator(Selectors.combinations)
+        if radios.count() > 0:
+            # Produit avec variantes — une ligne CSV par déclinaison
+            data["products_is_combination"] = "True"
+            data["product_parent_reference"] = code_p_init
+
+            declinaisons = _extract_declinaisons(page, radios)
+            for idx, decli in enumerate(declinaisons, start=1):
+                row = dict(data)
+                row["product_combination_index"]   = idx
+                row["product_combination_values"]  = decli["label"]
+                row["product_reference_fournisseur"] = decli["ref_prolians"] or ref_prolians_init
+                row["product_reference_fabricant"]   = decli["ref_fab"] or ref_fab_init
+                row["product_ean"]                  = decli["ean"] or ean_init
+                row["product_eco_taxe"]             = decli["eco_tax"] or eco_tax_init
+                row["product_promotion"]            = decli["reduction"] or reduction_init
+                row["product_child_reference"]      = decli["code_p"] or code_p_init
+                row["product_price_ht"]             = decli["price"]
+                row["product_stock_status"]         = decli["stock"]
+                row["product_fournisseur_url"]      = page.url
+                rows.append(row)
+        else:
+            # Produit simple
+            data["products_is_combination"]     = "False"
+            data["product_reference_fabricant"] = ref_fab_init
+            data["product_child_reference"]     = code_p_init
+            data["product_parent_reference"]    = code_p_init
+            data["product_combination_index"]   = 1
+            data["product_combination_values"]  = data.get("product_designation", "Produit standard")
+            data["product_price_ht"]            = price_init
+            data["product_stock_status"]        = stock_init
+            data["product_fournisseur_url"]     = page.url
+            rows.append(data)
+    except:
+        data["product_fournisseur_url"] = page.url
+        rows.append(data)
+
+    return rows

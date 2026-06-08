@@ -1,3 +1,13 @@
+"""
+Fonctions utilitaires partagées par tous les scrapers.
+
+Ce module fournit :
+  - Nettoyage de texte extrait du DOM (HTML, espaces, symboles)
+  - Extraction sécurisée via Playwright (safe_get_text, safe_get_attribute)
+  - Variantes Botasaurus (safe_get_text_bot) pour Legallais produits
+  - Helpers fichiers (répertoires, noms horodatés)
+"""
+
 import html
 from datetime import datetime
 from pathlib import Path
@@ -6,71 +16,64 @@ from typing import Optional, Any, Dict
 from .logger import logger
 
 
-# === NETTOYAGE DE TEXTE ===
+# ═══════════════════════════════════════════════════════════════════════════════
+# NETTOYAGE DE TEXTE
+# Normalise les chaînes avant insertion CSV / SQLite
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def clean_text(text: Any) -> str:
-    """
-    Nettoie le texte en supprimant les caractères HTML, espacements, etc.
-    
+    """Nettoie une chaîne extraite du web pour l'export CSV.
+
+    - Décode les entités HTML (&nbsp;, &euro;…)
+    - Remplace les espaces insécables et sauts de ligne
+    - Supprime ou remplace certains symboles problématiques pour le CSV (;)
+
     Args:
-        text: Texte à nettoyer
-        
+        text: Valeur brute (souvent str, parfois None ou autre type).
+
     Returns:
-        Texte nettoyé
+        Chaîne nettoyée, ou "" si l'entrée n'est pas une chaîne.
     """
     if not isinstance(text, str):
         return ""
-    
-    # Décodage HTML
+
     text = html.unescape(text)
-    
-    # Suppression caractères invisibles
-    text = text.replace("\xa0", " ")  # Espace insécable
+
+    # Caractères invisibles fréquents dans le HTML français
+    text = text.replace("\xa0", " ")
     text = text.replace("\n", " ")
     text = text.replace("\r", "")
     text = text.replace("\t", " ")
-    
-    # Remplacements de symboles (à utiliser avec prudence)
+
+    # Seul le ; est réellement problématique comme délimiteur CSV — le reste est
+    # laissé intact car l'export utilise QUOTE_ALL (tous les champs sont entre guillemets).
     replacements = {
-        "€": "",
-        "/": "-",
-        '"': " ",
-        ":":"",
-        ";":".",
-        ",":".",
-        ">=":" supèrieur ou égal à ",
-        "<=":"inférieur ou égal à ",
-        ">":" supérieur à ",
-        "<":" inférieur à ",
-        "=":" égal à ",
-        '"':' '
+        ";": ".",
+        ">=": " supérieur ou égal à ",
+        "<=": " inférieur ou égal à ",
+        ">": " supérieur à ",
+        "<": " inférieur à ",
     }
-    
+
     for old, new in replacements.items():
         text = text.replace(old, new)
-    
-    # Suppression espaces multiples
+
     text = ' '.join(text.split())
-    
     return text.strip()
 
 
 def clean_dict(data: Dict[str, Any]) -> Dict[str, str]:
-    """Nettoie toutes les valeurs d'un dictionnaire."""
+    """Applique clean_text à toutes les valeurs d'un dictionnaire produit."""
     return {key: clean_text(value) for key, value in data.items()}
 
 
-# === EXTRACTION DE DONNÉES ===
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACTION SÉCURISÉE — PLAYWRIGHT (async ou sync)
+# Retourne "" en cas d'élément absent ou timeout (pas d'exception propagée)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def safe_get_text(locator, timeout: int = 5000) -> str:
-    """
-    Extrait le texte de façon sécurisée d'un locateur
-    
-    Args:
-        locator: Locateur Playwright
-        timeout: Timeout en ms
-        
-    Returns:
-        Texte extrait et nettoyé
-    """
+    """Attend la visibilité d'un locator Playwright puis retourne son texte nettoyé."""
     try:
         locator.wait_for(state="visible", timeout=timeout)
         text = locator.inner_text(timeout=timeout)
@@ -80,19 +83,9 @@ def safe_get_text(locator, timeout: int = 5000) -> str:
         return ""
 
 
-def safe_get_text_bot(element,wait:int=1)->str:
-    """
-    Extrait le texte de façon sécurisée d'un locateur
-    
-    Args:
-        element: Element WEB Botasaurus
-        wait: Timeout en s
-        
-    Returns:
-        Texte extrait et nettoyé
-    """
+def safe_get_text_bot(element, wait: int = 1) -> str:
+    """Même rôle que safe_get_text pour un élément Botasaurus (Legallais)."""
     try:
-
         text = element.text(wait=wait)
         return clean_text(text)
     except Exception as e:
@@ -100,18 +93,8 @@ def safe_get_text_bot(element,wait:int=1)->str:
         return ""
 
 
-def safe_get_attribute_bot(element,attribute: str,wait:int=1)->str:
-    """
-    Extrait un attribut de façon sécurisée
-    
-    Args:
-        element: element Web Botasaurus
-        attribute: Nom de l'attribut
-        tiwaitmeout: Timeout en s
-        
-    Returns:
-        Valeur de l'attribut
-    """
+def safe_get_attribute_bot(element, attribute: str, wait: int = 1) -> str:
+    """Extrait un attribut HTML depuis un élément Botasaurus."""
     try:
         return element.get_attribute(attribute) or ""
     except Exception as e:
@@ -120,17 +103,7 @@ def safe_get_attribute_bot(element,attribute: str,wait:int=1)->str:
 
 
 def safe_get_attribute(locator, attribute: str, timeout: int = 5000) -> str:
-    """
-    Extrait un attribut de façon sécurisée
-    
-    Args:
-        locator: Locateur Playwright
-        attribute: Nom de l'attribut
-        timeout: Timeout en ms
-        
-    Returns:
-        Valeur de l'attribut
-    """
+    """Extrait un attribut (href, src, alt…) depuis un locator Playwright."""
     try:
         locator.wait_for(state="visible", timeout=timeout)
         return locator.get_attribute(attribute) or ""
@@ -140,15 +113,14 @@ def safe_get_attribute(locator, attribute: str, timeout: int = 5000) -> str:
 
 
 def extract_list_from_locators(locators: list, attribute: Optional[str] = None) -> list:
-    """
-    Extrait une liste de valeurs depuis une liste de locateurs
-    
+    """Parcourt une liste de locateurs et collecte texte ou attribut de chacun.
+
     Args:
-        locators: Liste de locateurs Playwright
-        attribute: Attribut à extraire (None = texte)
-        
+        locators: Liste d'objets Locator Playwright.
+        attribute: Si renseigné, extrait cet attribut ; sinon le texte visible.
+
     Returns:
-        Liste des valeurs extraites
+        Liste de chaînes nettoyées (valeurs vides exclues).
     """
     result = []
     for locator in locators:
@@ -157,31 +129,25 @@ def extract_list_from_locators(locators: list, attribute: Optional[str] = None) 
                 value = locator.get_attribute(attribute)
             else:
                 value = locator.inner_text().strip()
-            
+
             if value:
                 result.append(clean_text(value))
         except Exception as e:
             logger.debug(f"Erreur extraction: {e}")
-    
+
     return result
 
-# === UTILITAIRES FICHIERS ===
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UTILITAIRES FICHIERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def ensure_directory(path: Path) -> None:
-    """S'assure qu'un répertoire existe"""
+    """Crée le répertoire et ses parents si nécessaire."""
     path.mkdir(exist_ok=True, parents=True)
 
 
 def get_timestamped_filename(basename: str, extension: str = "csv") -> str:
-    """
-    Génère un nom de fichier avec timestamp
-    
-    Args:
-        basename: Nom de base du fichier
-        extension: Extension du fichier
-        
-    Returns:
-        Nom de fichier avec timestamp
-    """
+    """Génère un nom de fichier avec la date du jour (ex. export_2026-06-05.csv)."""
     today = datetime.today().strftime('%Y-%m-%d')
     return f"{basename}_{today}.{extension}"
-

@@ -1,12 +1,27 @@
-"""
-Moteur CSS du scraper Setin (orders).
+﻿"""
+Moteur CSS du scraper commandes Setin (site P5).
 
-Ce fichier contient uniquement les appels CSS : sélecteurs, parsing,
-extraction de données brutes depuis le HTML, et helpers de navigation/dates.
-L'orchestration (run, boucle principale, persistance) se trouve dans scrap_setin_p5.py.
+Rôle :
+    Extraction des données brutes depuis le backoffice commandes Setin :
+    identifiant, référence client, date, statut et détail du premier article
+    (ref:titre:quantité) via une page de détail ouverte en onglet temporaire.
+
+Type : commandes.
+
+Architecture :
+    - scraper_setin_orders.py (ce fichier) = couche CSS / parsing.
+    - scrap_setin_orders.py = orchestrateur (run, boucle, SQLite).
+    Les sélecteurs sont dans selectors/setin.py.
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import os
 import re
@@ -15,13 +30,14 @@ from datetime import datetime
 from dotenv import load_dotenv
 from playwright.async_api import Page
 
-import selectors.setin as SEL
+from css_selectors.setin import Selectors
 from core.base_scraper import BaseScraper
 from core.config import TIMEOUT_LONG
 from core.logger import log_exception
 
 load_dotenv()
 
+# ─── Classe moteur CSS ────────────────────────────────────────────────────────
 
 class SetinOrderScraper(BaseScraper):
     """Moteur CSS des commandes Setin — sélecteurs, parsing, extraction HTML."""
@@ -37,30 +53,28 @@ class SetinOrderScraper(BaseScraper):
         # Seuil haut : on saute les commandes > date_to
         self._date_to = date_to.replace(hour=23, minute=59, second=59, microsecond=0)
         self._max_pages = 500
-        self._order_row_selector = SEL.ORDERS["order_row"]
+        self._order_row_selector = Selectors.order_row
         if not self._username or not self._password:
             self.log.warning("User_P5 ou Password_P5 non défini dans .env")
 
-    # ------------------------------------------------------------------
-    # Connexion / session
-    # ------------------------------------------------------------------
+    # ─── Connexion / session ──────────────────────────────────────────────────
 
     async def _is_logged_in(self, page: Page) -> bool:
         try:
-            return await page.locator(SEL.LOGIN["user_info"]).count() > 0
+            return await page.locator(Selectors.user_info).count() > 0
         except Exception:
             return False
 
     async def _connexion(self, page: Page) -> None:
-        await page.locator(SEL.LOGIN["account_icon"]).first.click(timeout=TIMEOUT_LONG)
-        await page.get_by_placeholder(SEL.LOGIN["email_placeholder"]).last.fill(
+        await page.locator(Selectors.account_icon).first.click(timeout=TIMEOUT_LONG)
+        await page.get_by_placeholder(Selectors.email_placeholder).last.fill(
             self._username
         )
-        await page.get_by_placeholder(SEL.LOGIN["password_placeholder"]).last.fill(
+        await page.get_by_placeholder(Selectors.password_placeholder).last.fill(
             self._password
         )
         # Augmenter timeout pour le submit (serveur Setin lent)
-        await page.locator(SEL.LOGIN["submit"]).last.click(timeout=20000)
+        await page.locator(Selectors.submit).last.click(timeout=20000)
         # Attendre la navigation en parallèle avec timeout plus long
         try:
             await page.wait_for_navigation(timeout=20000)
@@ -77,28 +91,27 @@ class SetinOrderScraper(BaseScraper):
             self.log.debug("Timeout load — continuant...")
         self.log.info("Connexion terminée — URL : %s", page.url)
 
-    # ------------------------------------------------------------------
-    # Extraction d'une commande
-    # ------------------------------------------------------------------
+    # ─── Extraction d'une commande ────────────────────────────────────────────
 
     async def _extract_order(self, page: Page, order_el) -> dict | None:
         """Extrait les 5 champs métier d'une ligne commande."""
         try:
-            link_el = order_el.locator(SEL.ORDERS["order_link"])
+            link_el = order_el.locator(Selectors.order_link)
             ref_px_raw = await link_el.inner_text()
+            # Référence interne Setin (format B12345ABC) extraite du libellé du lien
             m = re.search(r"\bB\d+[A-Z]+\b", ref_px_raw)
             id_cmd = m.group(0) if m else ref_px_raw.strip()
 
             ref_cmd = ""
             try:
-                ref_sel = SEL.ORDERS["order_ref_template"].format(ref_px=id_cmd)
+                ref_sel = Selectors.order_ref_template.format(ref_px=id_cmd)
                 ref_cmd = (await order_el.locator(ref_sel).inner_text()).strip()
             except Exception:
                 pass
 
             date_cmd = ""
             try:
-                raw_date = await order_el.locator(SEL.ORDERS["order_date"]).first.inner_text()
+                raw_date = await order_el.locator(Selectors.order_date).first.inner_text()
                 date_cmd = self._normalize_date_label(raw_date)
             except Exception:
                 pass
@@ -106,7 +119,7 @@ class SetinOrderScraper(BaseScraper):
             statut_cmd = ""
             try:
                 statut_cmd = (
-                    await order_el.locator(SEL.ORDERS["order_status"]).inner_text(timeout=1000)
+                    await order_el.locator(Selectors.order_status).inner_text(timeout=1000)
                 ).strip()
             except Exception:
                 pass
@@ -116,7 +129,7 @@ class SetinOrderScraper(BaseScraper):
             try:
                 product_href = await link_el.get_attribute("href") or ""
                 if product_href:
-                    product_url = f"{SEL.BASE_URL}dhtml/{product_href}"
+                    product_url = f"{Selectors.BASE_URL}dhtml/{product_href}"
                     data_pdt = await self._extract_product_data(page, product_url)
             except Exception as exc:
                 log_exception(self.log, exc, f"data_pdt {id_cmd}")
@@ -141,18 +154,18 @@ class SetinOrderScraper(BaseScraper):
             await new_page.goto(product_url)
             await new_page.wait_for_load_state("domcontentloaded")
 
-            articles = new_page.locator(SEL.ORDERS["product_articles"])
+            articles = new_page.locator(Selectors.order_product_articles)
 
             title = (
-                await articles.locator(SEL.ORDERS["product_label"]).first.inner_text()
+                await articles.locator(Selectors.order_product_label).first.inner_text()
             ).strip().replace(":", "").replace(",", ".").replace(";", ".")
 
             ref = (
-                await articles.locator(SEL.ORDERS["product_text"]).first.inner_text()
+                await articles.locator(Selectors.order_product_text).first.inner_text()
             ).strip()
 
             qty_raw = (
-                await articles.locator(SEL.ORDERS["product_value"]).first.inner_text()
+                await articles.locator(Selectors.order_product_value).first.inner_text()
             ).strip()
             qty = int(float(qty_raw))
 
@@ -168,9 +181,7 @@ class SetinOrderScraper(BaseScraper):
                 except Exception:
                     pass
 
-    # ------------------------------------------------------------------
-    # Helpers — dates
-    # ------------------------------------------------------------------
+    # ─── Helpers — dates et détection du sélecteur de lignes ──────────────────
 
     @staticmethod
     def _normalize_date_label(raw: str) -> str:
@@ -182,7 +193,7 @@ class SetinOrderScraper(BaseScraper):
     async def _get_order_date_str(self, order_el) -> str:
         """Retourne la date normalisée (DD/MM/YYYY) ou le texte brut si impossible."""
         try:
-            raw = await order_el.locator(SEL.ORDERS["order_date"]).first.inner_text()
+            raw = await order_el.locator(Selectors.order_date).first.inner_text()
             normalized = self._normalize_date_label(raw)
             return normalized if re.fullmatch(r"\d{2}/\d{2}/\d{4}", normalized) else raw.strip()
         except Exception:
@@ -193,7 +204,7 @@ class SetinOrderScraper(BaseScraper):
             row = page.locator(selector).first
             if await row.count() == 0:
                 return False
-            if await row.locator(SEL.ORDERS["order_link"]).count() == 0:
+            if await row.locator(Selectors.order_link).count() == 0:
                 return False
             return True
         except Exception:
@@ -202,7 +213,7 @@ class SetinOrderScraper(BaseScraper):
     async def _resolve_order_row_selector(self, page: Page) -> str | None:
         """Détecte le meilleur sélecteur de ligne commande disponible sur la page."""
         candidates = [
-            SEL.ORDERS["order_row"],
+            Selectors.order_row,
             "div[class*='commande']:has(div.listing-setin-ligne-1)",
             "div[class*='commande']",
             "div[class*='row'] div.listing-setin-ligne-1",
@@ -226,18 +237,16 @@ class SetinOrderScraper(BaseScraper):
         except ValueError:
             return None
 
-    # ------------------------------------------------------------------
-    # Helpers — pagination
-    # ------------------------------------------------------------------
+    # ─── Helpers — pagination ─────────────────────────────────────────────────
 
     def _orders_pagination_locator(self, page: Page):
-        root = SEL.ORDERS.get("orders_pagination", ".oasis-pagination")
+        root = Selectors.orders_pagination
         return page.locator(root).first
 
     async def _get_ui_page_number(self, page: Page) -> str | None:
         try:
             current = self._orders_pagination_locator(page).locator(
-                SEL.ORDERS["pagination_current"]
+                Selectors.orders_pagination_current
             )
             if await current.count() == 0:
                 return None
@@ -248,7 +257,7 @@ class SetinOrderScraper(BaseScraper):
     async def _first_order_id(self, page: Page) -> str:
         try:
             first_row = page.locator(self._order_row_selector).first
-            link_el = first_row.locator(SEL.ORDERS["order_link"])
+            link_el = first_row.locator(Selectors.order_link)
             ref_px_raw = await link_el.inner_text()
             m = re.search(r"\bB\d+[A-Z]+\b", ref_px_raw)
             return m.group(0) if m else ref_px_raw.strip()
@@ -258,7 +267,7 @@ class SetinOrderScraper(BaseScraper):
     async def _has_next_orders_page(self, page: Page) -> bool:
         try:
             next_link = self._orders_pagination_locator(page).locator(
-                SEL.ORDERS["pagination_next"]
+                Selectors.orders_pagination_next
             )
             return await next_link.count() > 0
         except Exception:
@@ -267,7 +276,7 @@ class SetinOrderScraper(BaseScraper):
     async def _go_to_next_orders_page(self, page: Page, first_id_before: str) -> bool:
         try:
             next_link = self._orders_pagination_locator(page).locator(
-                SEL.ORDERS["pagination_next"]
+                Selectors.orders_pagination_next
             ).first
             if await next_link.count() == 0:
                 return False

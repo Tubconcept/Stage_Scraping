@@ -1,74 +1,63 @@
 # Gestionnaire de Scrapers
 
-Interface graphique simple pour lancer les scrapers et visualiser les donnees.
+Interface graphique Tkinter pour lancer les scrapers et exporter les données vers SQLite/CSV.
 
-## Demarrage
+## Démarrage
 
 ```bash
 uv run main.py
 ```
 
-L'interface s'ouvrira automatiquement dans une fenetre.
+## Fournisseurs pris en charge
 
-## Fonctionnalites
+| Code | Site | Actions disponibles |
+|------|------|---------------------|
+| P1 | Legallais (`legallais.com`) | Produits · Commandes · Suivi · Suppression adresses |
+| P3 | Prolians (`prolians.fr`) | Produits · Commandes · Suivi · Suppression adresses |
+| P5 | Setin (`setin.fr`) | Produits · Commandes · Suivi · Suppression adresses |
 
-### Onglet "Scraper"
-- Lancez le scraper Setin Orders
-- Selectionnez la plage de dates (debut et fin)
-- Visualisez la progression en temps reel dans le journal
-- Arretez le scraper a tout moment
+## Configuration
 
-### Onglet "Donnees"
-- Visualisez toutes les commandes scrapees
-- Consultez les details: ID, Reference, Date, Statut, Transporteur, Numero de suivi
-- Rafraichissez les donnees pour voir les changements
-- Exportez les donnees en format CSV
+Copiez `.env.example` en `.env` et renseignez vos identifiants :
 
-## Comment utiliser
-
-### Scraper les donnees
-
-1. Lancez l'application: `uv run main.py`
-2. Allez dans l'onglet **"Scraper"**
-3. Definissez la plage de dates:
-   - **Date de debut**: YYYY-MM-DD (ex: 2026-05-20)
-   - **Date de fin**: YYYY-MM-DD (ex: 2026-05-27)
-4. Cliquez sur **"Lancer Setin Orders"**
-5. Observez la progression dans le journal
-6. Les commandes seront automatiquement sauvegardees en base de donnees
-
-### Visualiser les donnees
-
-1. Allez dans l'onglet **"Donnees"**
-2. Les commandes s'affichent dans le tableau
-3. Cliquez sur **"Rafraichir"** pour mettre a jour
-4. Cliquez sur **"Exporter en CSV"** pour telecharger les donnees
-
-## Configuration requise
-
-Votre fichier `.env` doit contenir:
 ```
-User_P5=votre_identifiant
-Password_P5=votre_mot_de_passe
+User_P1=...   Password_P1=...   # Legallais
+User_P3=...   Password_P3=...   # Prolians
+User_P5=...   Password_P5=...   # Setin
 ```
 
-## Base de donnees
+Variable optionnelle : `DAYS_TO_SCRAPE` (défaut : 7).
 
-Les donnees sont stockees dans SQLite:
-- Fichier: `setin_data.db`
-- Table: `setin_orders`
-- Colonnes: ID, Reference, Date, Statut, Produit, Transporteur, Suivi
+## Bases de données
 
-## Depannage
+Chaque fournisseur dispose de son propre fichier SQLite à la racine :
 
-**Erreur d'authentification:**
-- Verifiez vos identifiants P5 dans `.env`
+| Fichier | Tables |
+|---------|--------|
+| `legallais.db` | `legallais_products` · `legallais_orders` · `legallais_tracking` |
+| `prolians.db` | `prolians_products` · `prolians_orders` · `prolians_tracking` |
+| `setin.db` | `setin_products` · `setin_orders` · `setin_tracking` |
 
-**Pas de donnees affichees:**
-- Verifiez votre connexion internet
-- Verifiez que votre compte Setin est actif
-- Cliquez sur "Rafraichir"
+Les schémas sont générés automatiquement au premier lancement depuis les constantes de `core/config.py`.
 
-**Le scraper est lent:**
-- C'est normal! Le scraper doit charger chaque page
-- Le nombre de pages depend de la plage de dates
+## Structure du projet
+
+```
+scrapers/
+  Legallais_P1/   products · orders · tracking · deleting
+  Prolians_P3/    products · orders · tracking · deleting
+  Setin_P5/       products · orders · tracking · deleting
+auth/             cookie managers par fournisseur
+css_selectors/    sélecteurs CSS/XPath par fournisseur
+core/             config · logger · utils
+db/               sqlite_db.py (API SQLite partagée)
+gui/              interface Tkinter
+```
+
+## Dépannage
+
+**Erreur d'authentification** — vérifiez les identifiants dans `.env`.
+
+**Scraper lent** — normal : chaque fiche/page est chargée dans un navigateur headless.
+
+**Reprise après crash** — les URL produits déjà insérées en base sont ignorées au redémarrage.

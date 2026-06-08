@@ -1,10 +1,27 @@
-"""Moteur CSS pour le tracking Setin.
+﻿"""
+Moteur CSS du scraper suivi / tracking Setin (site P5).
 
-Contient uniquement : __init__, vérification/connexion de session,
-fonctions d'extraction et helpers DOM / parsing.
+Rôle :
+    Extraction des champs de suivi depuis la liste commandes et la page détail :
+    transporteur (détection par domaine d'URL), numéro de colis, lien de suivi,
+    date reliquat, poids d'expédition et données article (ref:titre:qty).
+
+Type : suivi (tracking).
+
+Architecture :
+    - scraper_setin_tracking.py (ce fichier) = couche CSS / parsing.
+    - scrap_setin_tracking.py = orchestrateur (run, boucle, SQLite).
+    Réutilise la même logique de pagination que le scraper commandes.
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import os
 import re
@@ -13,7 +30,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from playwright.async_api import Page
 
-import selectors.setin as SEL
+from css_selectors.setin import Selectors
 from core.base_scraper import BaseScraper
 from core.config import TIMEOUT_LONG
 from core.logger import log_exception
@@ -21,9 +38,7 @@ from core.logger import log_exception
 load_dotenv()
 
 
-# ---------------------------------------------------------------------------
-# Détection de transporteurs
-# ---------------------------------------------------------------------------
+# ─── Détection de transporteurs depuis l'URL de suivi ─────────────────────────
 
 _CARRIERS: list[dict] = [
     {"name": "TNT",         "domain": "tnt.fr",         "pattern": r"bonTransport=(\d+)"},
@@ -47,9 +62,7 @@ def _detect_carrier(tracking_url: str) -> tuple[str | None, str | None]:
     return "Inconnu", None
 
 
-# ---------------------------------------------------------------------------
-# Scraper principal (moteur CSS)
-# ---------------------------------------------------------------------------
+# ─── Classe moteur CSS ────────────────────────────────────────────────────────
 
 
 class SetinTrackingScraper(BaseScraper):
@@ -58,34 +71,42 @@ class SetinTrackingScraper(BaseScraper):
     SUPPLIER: str = "setin"
     DAYS: int = 7
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> None:
         super().__init__("setin_tracking")
         self._username: str = os.getenv("User_P5", "")
         self._password: str = os.getenv("Password_P5", "")
-        self._date_from = datetime.now().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - timedelta(days=self.DAYS)
+        now = datetime.now()
+        if date_from is not None and date_to is not None:
+            self._date_from = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._date_to = date_to.replace(hour=23, minute=59, second=59, microsecond=0)
+        else:
+            self._date_from = now.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) - timedelta(days=self.DAYS)
+            self._date_to = now.replace(hour=23, minute=59, second=59, microsecond=0)
         self._max_pages = 500
-        self._order_row_selector = SEL.ORDERS["order_row"]
+        self._order_row_selector = Selectors.order_row
         if not self._username or not self._password:
             self.log.warning("User_P5 ou Password_P5 non défini dans .env")
 
-    # ------------------------------------------------------------------
-    # Connexion / session
-    # ------------------------------------------------------------------
+    # ─── Connexion / session ──────────────────────────────────────────────────
 
     async def _is_logged_in(self, page: Page) -> bool:
         try:
-            return await page.locator(SEL.LOGIN["user_info"]).count() > 0
+            return await page.locator(Selectors.user_info).count() > 0
         except Exception:
             return False
 
     async def _connexion(self, page: Page) -> None:
-        await page.locator(SEL.LOGIN["account_icon"]).first.click(timeout=TIMEOUT_LONG)
-        await page.get_by_placeholder(SEL.LOGIN["email_placeholder"]).last.fill(self._username)
-        await page.get_by_placeholder(SEL.LOGIN["password_placeholder"]).last.fill(self._password)
+        await page.locator(Selectors.account_icon).first.click(timeout=TIMEOUT_LONG)
+        await page.get_by_placeholder(Selectors.email_placeholder).last.fill(self._username)
+        await page.get_by_placeholder(Selectors.password_placeholder).last.fill(self._password)
         # Augmenter timeout pour le submit (serveur Setin lent)
-        await page.locator(SEL.LOGIN["submit"]).last.click(timeout=20000)
+        await page.locator(Selectors.submit).last.click(timeout=20000)
         # Attendre la navigation en parallèle avec timeout plus long
         try:
             await page.wait_for_navigation(timeout=20000)
@@ -102,28 +123,26 @@ class SetinTrackingScraper(BaseScraper):
             self.log.debug("Timeout load — continuant...")
         self.log.info("Connexion terminée — URL : %s", page.url)
 
-    # ------------------------------------------------------------------
-    # Extraction d'une commande (opère sur un Playwright locator - élément)
-    # ------------------------------------------------------------------
+    # ─── Extraction d'une commande (locator Playwright) ───────────────────────
 
     async def _extract_order(self, page: Page, order_el) -> dict | None:
         """Extrait les 10 champs tracking d'une ligne commande."""
         try:
-            link_el = order_el.locator(SEL.ORDERS["order_link"])
+            link_el = order_el.locator(Selectors.order_link)
             ref_px_raw = await link_el.inner_text()
             m = re.search(r"\bB\d+[A-Z]+\b", ref_px_raw)
             id_cmd = m.group(0) if m else ref_px_raw.strip()
 
             ref_cmd = ""
             try:
-                ref_sel = SEL.ORDERS["order_ref_template"].format(ref_px=id_cmd)
+                ref_sel = Selectors.order_ref_template.format(ref_px=id_cmd)
                 ref_cmd = (await order_el.locator(ref_sel).inner_text()).strip()
             except Exception:
                 pass
 
             date_cmd = ""
             try:
-                raw_date = await order_el.locator(SEL.ORDERS["order_date"]).first.inner_text()
+                raw_date = await order_el.locator(Selectors.order_date).first.inner_text()
                 date_cmd = self._normalize_date_label(raw_date)
             except Exception:
                 pass
@@ -131,7 +150,7 @@ class SetinTrackingScraper(BaseScraper):
             statut_cmd = ""
             try:
                 statut_cmd = (
-                    await order_el.locator(SEL.ORDERS["order_status"]).inner_text(timeout=1000)
+                    await order_el.locator(Selectors.order_status).inner_text(timeout=1000)
                 ).strip()
             except Exception:
                 pass
@@ -141,7 +160,7 @@ class SetinTrackingScraper(BaseScraper):
             trackinglink_exp: str | None = None
             tracking_exp: str | None = None
 
-            tracking_loc = order_el.locator(SEL.ORDERS["order_tracking"])
+            tracking_loc = order_el.locator(Selectors.order_tracking)
             if await tracking_loc.count() > 0:
                 tracking_url = await tracking_loc.first.get_attribute("href") or ""
                 trackinglink_exp = tracking_url or None
@@ -152,7 +171,7 @@ class SetinTrackingScraper(BaseScraper):
             # Date reliquat depuis la liste (ligne-4)
             Date_Reliquat: str | None = None
             try:
-                reliquat_loc = order_el.locator(SEL.ORDERS["order_reliquat"])
+                reliquat_loc = order_el.locator(Selectors.order_reliquat)
                 count = await reliquat_loc.count()
                 if count > 0:
                     raw_rel = await reliquat_loc.first.inner_text()
@@ -161,7 +180,7 @@ class SetinTrackingScraper(BaseScraper):
                     if Date_Reliquat:
                         self.log.debug("[%s] Date reliquat trouvée : %s", id_cmd, Date_Reliquat)
                 else:
-                    self.log.debug("[%s] Sélecteur reliquat introuvable (chercher : %s)", id_cmd, SEL.ORDERS["order_reliquat"])
+                    self.log.debug("[%s] Sélecteur reliquat introuvable (chercher : %s)", id_cmd, Selectors.order_reliquat)
             except Exception as e:
                 self.log.debug("[%s] Erreur extraction reliquat : %s", id_cmd, e)
 
@@ -171,7 +190,7 @@ class SetinTrackingScraper(BaseScraper):
             try:
                 product_href = await link_el.get_attribute("href") or ""
                 if product_href:
-                    product_url = f"{SEL.BASE_URL}dhtml/{product_href}"
+                    product_url = f"{Selectors.BASE_URL}dhtml/{product_href}"
                     data_pdt, weight_exp = await self._extract_detail_page(page, product_url)
             except Exception as exc:
                 log_exception(self.log, exc, f"detail page {id_cmd}")
@@ -208,15 +227,15 @@ class SetinTrackingScraper(BaseScraper):
             # data_pdt
             data_pdt = ""
             try:
-                articles = new_page.locator(SEL.ORDERS["product_articles"])
+                articles = new_page.locator(Selectors.order_product_articles)
                 title = (
-                    await articles.locator(SEL.ORDERS["product_label"]).first.inner_text()
+                    await articles.locator(Selectors.order_product_label).first.inner_text()
                 ).strip().replace(":", "").replace(",", ".").replace(";", ".")
                 ref = (
-                    await articles.locator(SEL.ORDERS["product_text"]).first.inner_text()
+                    await articles.locator(Selectors.order_product_text).first.inner_text()
                 ).strip()
                 qty_raw = (
-                    await articles.locator(SEL.ORDERS["product_value"]).first.inner_text()
+                    await articles.locator(Selectors.order_product_value).first.inner_text()
                 ).strip()
                 qty = int(float(qty_raw))
                 data_pdt = f"{ref}:{title}:{qty}"
@@ -226,13 +245,13 @@ class SetinTrackingScraper(BaseScraper):
             # weight_exp — sélecteur à vérifier dans selectors/setin.py (detail_weight)
             weight_exp: str | None = None
             try:
-                weight_loc = new_page.locator(SEL.ORDERS["detail_weight"])
+                weight_loc = new_page.locator(Selectors.detail_weight)
                 count = await weight_loc.count()
                 if count > 0:
                     weight_exp = (await weight_loc.first.inner_text()).strip() or None
                     self.log.debug("Poids expédition trouvé : %s", weight_exp)
                 else:
-                    self.log.debug("Sélecteur poids introuvable (chercher : %s) — URL : %s", SEL.ORDERS["detail_weight"], new_page.url)
+                    self.log.debug("Sélecteur poids introuvable (chercher : %s) — URL : %s", Selectors.detail_weight, new_page.url)
             except Exception as e:
                 self.log.debug("Erreur extraction poids : %s", e)
 
@@ -248,9 +267,7 @@ class SetinTrackingScraper(BaseScraper):
                 except Exception:
                     pass
 
-    # ------------------------------------------------------------------
-    # Helpers — dates et pagination (identiques au scraper orders)
-    # ------------------------------------------------------------------
+    # ─── Helpers — dates et pagination (identiques au scraper orders) ─────────
 
     @staticmethod
     def _normalize_date_label(raw: str) -> str:
@@ -260,7 +277,7 @@ class SetinTrackingScraper(BaseScraper):
 
     async def _get_order_date_str(self, order_el) -> str:
         try:
-            raw = await order_el.locator(SEL.ORDERS["order_date"]).first.inner_text()
+            raw = await order_el.locator(Selectors.order_date).first.inner_text()
             normalized = self._normalize_date_label(raw)
             return normalized if re.fullmatch(r"\d{2}/\d{2}/\d{4}", normalized) else raw.strip()
         except Exception:
@@ -278,7 +295,7 @@ class SetinTrackingScraper(BaseScraper):
             row = page.locator(selector).first
             if await row.count() == 0:
                 return False
-            if await row.locator(SEL.ORDERS["order_link"]).count() == 0:
+            if await row.locator(Selectors.order_link).count() == 0:
                 return False
             return True
         except Exception:
@@ -286,7 +303,7 @@ class SetinTrackingScraper(BaseScraper):
 
     async def _resolve_order_row_selector(self, page: Page) -> str | None:
         candidates = [
-            SEL.ORDERS["order_row"],
+            Selectors.order_row,
             "div[class*='commande']:has(div.listing-setin-ligne-1)",
             "div[class*='commande']",
             "div[class*='row'] div.listing-setin-ligne-1",
@@ -302,13 +319,13 @@ class SetinTrackingScraper(BaseScraper):
         return None
 
     def _orders_pagination_locator(self, page: Page):
-        root = SEL.ORDERS.get("orders_pagination", ".oasis-pagination")
+        root = Selectors.orders_pagination
         return page.locator(root).first
 
     async def _get_ui_page_number(self, page: Page) -> str | None:
         try:
             current = self._orders_pagination_locator(page).locator(
-                SEL.ORDERS["pagination_current"]
+                Selectors.orders_pagination_current
             )
             if await current.count() == 0:
                 return None
@@ -319,7 +336,7 @@ class SetinTrackingScraper(BaseScraper):
     async def _first_order_id(self, page: Page) -> str:
         try:
             first_row = page.locator(self._order_row_selector).first
-            link_el = first_row.locator(SEL.ORDERS["order_link"])
+            link_el = first_row.locator(Selectors.order_link)
             ref_px_raw = await link_el.inner_text()
             m = re.search(r"\bB\d+[A-Z]+\b", ref_px_raw)
             return m.group(0) if m else ref_px_raw.strip()
@@ -329,7 +346,7 @@ class SetinTrackingScraper(BaseScraper):
     async def _has_next_orders_page(self, page: Page) -> bool:
         try:
             next_link = self._orders_pagination_locator(page).locator(
-                SEL.ORDERS["pagination_next"]
+                Selectors.orders_pagination_next
             )
             return await next_link.count() > 0
         except Exception:
@@ -338,7 +355,7 @@ class SetinTrackingScraper(BaseScraper):
     async def _go_to_next_orders_page(self, page: Page, first_id_before: str) -> bool:
         try:
             next_link = self._orders_pagination_locator(page).locator(
-                SEL.ORDERS["pagination_next"]
+                Selectors.orders_pagination_next
             ).first
             if await next_link.count() == 0:
                 return False

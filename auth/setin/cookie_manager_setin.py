@@ -1,7 +1,7 @@
-"""
+﻿"""
 Gestion de session Setin — sauvegarde/restauration via storage_state Playwright.
 
-La session est stockée dans playwright_profiles/setin_storage.json.
+La session est stockée dans playwright_profiles/setin/session.json.
 Contrairement à Prolians, elle n'est pas limitée à une journée : elle reste
 valide tant que le site ne l'expire pas.
 
@@ -22,15 +22,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from selectors.setin import LOGIN, BASE_URL
+from css_selectors.setin import Selectors
 from core.config import PROFILES_DIR, TIMEOUT_LONG, TIMEOUT_MEDIUM
 
-SESSION_FILE = PROFILES_DIR / "setin_storage.json"
+SESSION_FILE = PROFILES_DIR / "setin" / "session.json"
 
 
 def save_session(context: BrowserContext) -> None:
     """Sauvegarde le storage_state (cookies + localStorage) dans le fichier de session."""
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     storage = context.storage_state()
     with open(SESSION_FILE, "w", encoding="utf-8") as f:
         json.dump(storage, f, indent=2)
@@ -45,7 +45,7 @@ def is_session_valid() -> bool:
 def is_logged_in(page: Page) -> bool:
     """Vérifie si le compte Setin est connecté sur la page courante."""
     try:
-        return page.locator(LOGIN["user_info"]).count() > 0
+        return page.locator(Selectors.user_info).count() > 0
     except Exception:
         return False
 
@@ -57,20 +57,20 @@ def login(page: Page, username: str, password: str) -> bool:
         return False
 
     try:
-        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+        page.goto(Selectors.BASE_URL, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
         print(f"Impossible de charger le site : {e}")
         return False
 
     # Attendre la fin du loader
     try:
-        page.locator(LOGIN["page_loader"]).wait_for(state="hidden", timeout=10000)
+        page.locator(Selectors.page_loader).wait_for(state="hidden", timeout=10000)
     except Exception:
         pass
 
     # Passer l'écran d'accueil si présent
     try:
-        page.locator(LOGIN["home_return_button"]).first.click(timeout=TIMEOUT_MEDIUM)
+        page.locator(Selectors.home_return_button).first.click(timeout=TIMEOUT_MEDIUM)
         page.wait_for_load_state("domcontentloaded", timeout=10000)
     except Exception:
         pass
@@ -80,10 +80,10 @@ def login(page: Page, username: str, password: str) -> bool:
         return True
 
     try:
-        page.locator(LOGIN["account_icon"]).first.click(timeout=TIMEOUT_LONG)
-        page.get_by_placeholder(LOGIN["email_placeholder"]).last.fill(username)
-        page.get_by_placeholder(LOGIN["password_placeholder"]).last.fill(password)
-        page.locator(LOGIN["submit"]).last.click(timeout=20000)
+        page.locator(Selectors.account_icon).first.click(timeout=TIMEOUT_LONG)
+        page.get_by_placeholder(Selectors.email_placeholder).last.fill(username)
+        page.get_by_placeholder(Selectors.password_placeholder).last.fill(password)
+        page.locator(Selectors.submit).last.click(timeout=20000)
     except Exception as e:
         print(f"Étape de connexion échouée : {e}")
         return False
@@ -119,13 +119,13 @@ def ensure_logged_in(page: Page, context: BrowserContext, username: str, passwor
     avant d'appeler cette fonction.
     """
     try:
-        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+        page.goto(Selectors.BASE_URL, wait_until="domcontentloaded", timeout=30000)
         try:
-            page.locator(LOGIN["page_loader"]).wait_for(state="hidden", timeout=10000)
+            page.locator(Selectors.page_loader).wait_for(state="hidden", timeout=10000)
         except Exception:
             pass
         try:
-            page.locator(LOGIN["home_return_button"]).first.click(timeout=TIMEOUT_MEDIUM)
+            page.locator(Selectors.home_return_button).first.click(timeout=TIMEOUT_MEDIUM)
             page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception:
             pass

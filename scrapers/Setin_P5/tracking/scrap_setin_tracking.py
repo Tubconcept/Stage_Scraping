@@ -1,19 +1,43 @@
-"""Orchestrateur pour le scraping tracking Setin.
+﻿"""
+Orchestrateur du scraper suivi / tracking Setin (site P5).
 
-Contient : run(), boucle principale, persistance SQLite, factory et CLI.
+Rôle :
+    Parcourt les commandes récentes (fenêtre glissante ou plage de dates),
+    extrait les informations de suivi colis (transporteur, lien, poids, reliquat)
+    et les enregistre en SQLite (table tracking de setin.db).
+
+Type : suivi (tracking / expédition).
+
+Architecture :
+    - scrap_setin_tracking.py (ce fichier) = orchestrateur : run(), boucle
+      pagination, filtrage dates, mapping vers insert_tracking().
+    - scraper_setin_tracking.py = moteur CSS : extraction ligne commande,
+      détection transporteur depuis l'URL, page détail pour poids/articles.
+
+Consommateurs : GUI (create_scraper), CLI (--date-from, --days).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+# ─── Bootstrap du chemin projet ───────────────────────────────────────────────
+
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import argparse
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-import selectors.setin as SEL
-from core.config import DB_PATH, PROFILES_DIR, TIMEOUT_MEDIUM
+from css_selectors.setin import Selectors
+from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
 from core.logger import log_exception
-from db.database import init_db
-from db.models import SetinProduct, SetinTracking
+from db.sqlite_db import init_site_db, insert_tracking
 
 try:
     from .scraper_setin_tracking import SetinTrackingScraper as _SetinCSS
@@ -21,30 +45,46 @@ except ImportError:
     from scraper_setin_tracking import SetinTrackingScraper as _SetinCSS  # type: ignore[no-redef]
 
 
+# ─── Classe orchestratrice ────────────────────────────────────────────────────
+
 class SetinTrackingScraper(_SetinCSS):
+    def __init__(
+        self,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        csv_path: str | Path | None = None,
+    ) -> None:
+        super().__init__(date_from=date_from, date_to=date_to)
+        self._csv_path = None  # GUI compat — CSV export is on-demand only
+        self._db_conn = None  # sqlite3.Connection, opened in run()
+
     async def run(self) -> None:
         """Lance le scraping du suivi Setin."""
-        init_db(db_path=DB_PATH, extra_models=[SetinProduct, SetinTracking])
+        try:
+            self._db_conn = init_site_db("setin")
+        except Exception as exc:
+            self.log.warning("SQLite non initialisée : %s", exc)
+            self._db_conn = None
 
-        storage_path = PROFILES_DIR / "setin_storage.json"
+        storage_path = PROFILES_DIR / "setin" / "session.json"
         storage_state = str(storage_path) if storage_path.exists() else None
 
         await self.start_browser(headless=False, storage_state=storage_state)
         page = await self.new_page()
 
         try:
-            await page.goto(SEL.BASE_URL)
+            await page.goto(Selectors.BASE_URL)
             await page.wait_for_load_state("domcontentloaded")
 
             try:
-                await page.locator(SEL.LOGIN["page_loader"]).wait_for(
+                await page.locator(Selectors.page_loader).wait_for(
                     state="hidden", timeout=10000
                 )
             except Exception:
                 pass
 
             try:
-                await page.locator(SEL.LOGIN["home_return_button"]).first.click(
+                await page.locator(Selectors.home_return_button).first.click(
                     timeout=TIMEOUT_MEDIUM
                 )
                 await page.wait_for_load_state("domcontentloaded")
@@ -63,17 +103,25 @@ class SetinTrackingScraper(_SetinCSS):
         except Exception as exc:
             log_exception(self.log, exc, "Erreur fatale run() setin_tracking")
         finally:
+            if self._db_conn is not None:
+                try:
+                    self._db_conn.close()
+                except Exception:
+                    pass
+                self._db_conn = None
             await self.close()
 
-        self.log.info("Setin tracking terminé — %d dernier(s) jour(s)", self.DAYS)
+        self.log.info(
+            "Setin tracking terminé — %s → %s",
+            self._date_from.strftime("%d/%m/%Y"),
+            self._date_to.strftime("%d/%m/%Y"),
+        )
 
-    # ------------------------------------------------------------------
-    # Scraping de la liste (boucle principale et décisions métier)
-    # ------------------------------------------------------------------
+    # ─── Scraping de la liste (boucle principale et décisions métier) ─────────
 
     async def _scrape_all(self, page: Page) -> None:
         """Parcourt le backoffice commandes sur les 7 derniers jours."""
-        orders_url = f"{SEL.BASE_URL}{SEL.ORDERS['orders_url']}"
+        orders_url = Selectors.ORDERS_URL
         current_page = 1
         total_saved = 0
         total_skipped_parse = 0
@@ -91,7 +139,7 @@ class SetinTrackingScraper(_SetinCSS):
         except Exception:
             pass
         try:
-            await page.locator(SEL.LOGIN["page_loader"]).wait_for(
+            await page.locator(Selectors.page_loader).wait_for(
                 state="hidden", timeout=10000
             )
         except Exception:
@@ -149,6 +197,9 @@ class SetinTrackingScraper(_SetinCSS):
                     self.log.warning("[p%d] Date illisible (%s) — ignorée", current_page, raw)
                     continue
 
+                if order_date > self._date_to:
+                    continue
+
                 if order_date < self._date_from:
                     self.log.info(
                         "Seuil atteint — commande du %s < %s — arrêt",
@@ -191,35 +242,67 @@ class SetinTrackingScraper(_SetinCSS):
             total_saved, total_skipped_parse, current_page,
         )
 
-    # ------------------------------------------------------------------
-    # Persistance SQLite
-    # ------------------------------------------------------------------
+    # ─── Persistance SQLite ───────────────────────────────────────────────────
 
     def _save_to_db(self, data: dict) -> None:
-        """Insère une entrée dans setin_tracking — ignorée si id_cmd déjà présent."""
-        SetinTracking.insert(
-            scraped_at=datetime.now(),
-            id_cmd=data["id_cmd"],
-            ref_cmd=data["ref_cmd"],
-            date_cmd=data["date_cmd"],
-            statut_cmd=data["statut_cmd"],
-            data_pdt=data["data_pdt"],
-            Date_Reliquat=data["Date_Reliquat"],
-            weight_exp=data["weight_exp"],
-            carrier_exp=data["carrier_exp"],
-            trackinglink_exp=data["trackinglink_exp"],
-            tracking_exp=data["tracking_exp"],
-        ).execute()
+        """Enregistre le suivi en SQLite."""
+        row = {
+            "id_cmd": data.get("id_cmd", ""),
+            "ref_cmd": data.get("ref_cmd", ""),
+            "date_cmd": data.get("date_cmd", ""),
+            "statut_cmd": data.get("statut_cmd", ""),
+            "data_pdt": data.get("data_pdt", ""),
+            "Date_Reliquat": data.get("Date_Reliquat") or "",
+            "weight_exp": data.get("weight_exp") or "",
+            "carrier_exp": data.get("carrier_exp") or "",
+            "trackinglink_exp": data.get("trackinglink_exp") or "",
+            "tracking_exp": data.get("tracking_exp") or "",
+        }
+        if self._db_conn is not None:
+            try:
+                insert_tracking(self._db_conn, "setin", row)
+            except Exception as exc:
+                self.log.debug("SQLite tracking ignoré : %s", exc)
 
 
-def create_scraper() -> SetinTrackingScraper:
-    return SetinTrackingScraper()
+# ─── Factory et CLI ───────────────────────────────────────────────────────────
+
+def create_scraper(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    csv_path: str | Path | None = None,
+) -> SetinTrackingScraper:
+    return SetinTrackingScraper(
+        date_from=date_from, date_to=date_to, csv_path=csv_path
+    )
+
+
+def _parse_date(s: str) -> datetime:
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s.strip(), fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Date invalide : {s}")
 
 
 def main() -> None:
     import asyncio
 
-    scraper = create_scraper()
+    parser = argparse.ArgumentParser(description="Scraper tracking Setin → SQLite")
+    parser.add_argument("--date-from", dest="date_from", help="JJ/MM/AAAA")
+    parser.add_argument("--date-to", dest="date_to", help="JJ/MM/AAAA")
+    parser.add_argument("--days", type=int, default=7, help="Si pas de dates : N derniers jours")
+    args = parser.parse_args()
+
+    if args.date_from and args.date_to:
+        date_from = _parse_date(args.date_from)
+        date_to = _parse_date(args.date_to)
+    else:
+        date_to = datetime.now()
+        date_from = date_to - timedelta(days=args.days)
+
+    scraper = create_scraper(date_from=date_from, date_to=date_to)
     asyncio.run(scraper.run())
 
 

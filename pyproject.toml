@@ -3,17 +3,11 @@ name = "stage-scraping"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "botasaurus>=4.0.97",
-    "bs4>=0.0.2",
-    "dataclasses>=0.8",
-    "datetime>=6.0",
-    "dotenv>=0.9.9",
-    "pathlib>=1.0.1",
+    "beautifulsoup4>=4.12.0",
+    "python-dotenv>=1.0.0",
     "playwright>=1.60.0",
-    "selenium>=4.44.0",
-    "typing>=3.10.0.0",
     "peewee>=3.17.0",
-    "chromium>=0.0.0",
 ]

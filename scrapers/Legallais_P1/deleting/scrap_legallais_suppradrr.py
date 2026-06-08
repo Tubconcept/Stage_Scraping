@@ -1,19 +1,48 @@
+﻿"""
+Script de suppression des adresses de livraison Legallais (site P1).
+
+Rôle :
+    Se connecte au compte Legallais, navigue vers « Mes adresses » et supprime
+    les adresses au-delà des deux premières (boucle sur la 3ème carte).
+
+Type : suppression (nettoyage des adresses enregistrées).
+
+Architecture :
+    Fichier autonome utilisant Botasaurus (@browser) : pas de séparation
+    scrap_/scraper_. Réutilise cookie_manager_legallais pour la session et
+    les sélecteurs de selectors/legallais.py.
+
+Consommateurs : CLI (__main__ via cleanup_legallais_addresses).
+"""
+
 from __future__ import annotations
+
+# ─── Bootstrap et imports ─────────────────────────────────────────────────────
+
 import os
+import sys
 import time
-import importlib.util as _ilu
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, List
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from botasaurus.browser import browser, Driver
 from dotenv import load_dotenv
+from css_selectors.legallais import SELECTORS as _LEGALLAIS_SEL
 
-_spec = _ilu.spec_from_file_location("_legallais_css", Path(__file__).resolve().parents[3] / "css_selectors" / "legallais.py")
-_mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
-globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
-del _ilu, _spec, _mod
+EMAIL_INPUT    = _LEGALLAIS_SEL["email"]
+PASSWORD_INPUT = _LEGALLAIS_SEL["password"]
+LOGIN_BUTTON   = _LEGALLAIS_SEL["submit"]
+BREADCRUMB     = _LEGALLAIS_SEL["breadcrumb"]
 
 load_dotenv()
+
+# ─── Modèle de données (adresse) ────────────────────────────────────────────────
+
 @dataclass
 class AddressItem:
     index: int
@@ -21,10 +50,11 @@ class AddressItem:
     delete_selector: Optional[str] = None
     is_default: bool = False
 
-# ---------------------- Configuration ---------------------------------
+# ─── Configuration ────────────────────────────────────────────────────────────
+
 LOGIN_URL = "https://www.legallais.com/user/connection"
-LEGALLAIS_EMAIL=os.getenv("User")
-LEGALLAIS_PASSWORD=os.getenv("Password")
+LEGALLAIS_EMAIL=os.getenv("User_P1")
+LEGALLAIS_PASSWORD=os.getenv("Password_P1")
 # Page "Mes adresses" – à ajuster si besoin après login
 ADDRESSES_URL_CANDIDATES = [
     # essaye direct par URL si connue (sinon navigation par menu)
@@ -35,8 +65,8 @@ DRY_RUN = True  # True = ne clique pas sur "Supprimer", juste un aperçu
 HEADLESS = False  # Mettez True pour exécution silencieuse une fois validé
 HUMAN_MODE = True  # mouvements humains pour réduire la détection
 WAIT = 6  # délai d'attente implicite (secondes)
-# ---------------------- Utilitaires Driver -----------------------------
-# Sélecteurs à ajuster en fonction du DOM réel
+# ─── Sélecteurs DOM adresses ──────────────────────────────────────────────────
+
 SEL = {
     # Liste des adresses + actions
     "address_cards": ".pro-space-myaccount__delivery-item",
@@ -94,9 +124,12 @@ def _navigate_to_addresses(driver: Driver) -> None:
        
            
 
+# ─── Boucle de suppression ────────────────────────────────────────────────────
+
 def cleanup_addresses(driver: Driver):
+    """Supprime la 3ème adresse en boucle jusqu'à n'en plus avoir que 2."""
     while True:
-        # Récupère toutes les cartes
+        # Cible toujours la 3ème carte (nth-child(3)) pour conserver les 2 premières
         try:
             card = driver.select(SEL["address_cards"]+":nth-child(3)")
         except:
@@ -131,13 +164,36 @@ def cleanup_addresses(driver: Driver):
             pass
         time.sleep(8)  # petite marge de sécurité
 
-# ---------------------- Tâche principale --------------------------------
+# ─── Point d'entrée Botasaurus ──────────────────────────────────────────────────
 
 @browser(block_images=True, headless=HEADLESS,)
 def cleanup_legallais_addresses(driver: Driver, _data=None):
+    from auth.legallais.cookie_manager_legallais import (
+        load_cookies_for_driver, save_cookies_from_driver,
+    )
+    from css_selectors.legallais import BASE_URL
 
-    print("Ouverture de session…")
-    _fill_and_submit_login(driver, LEGALLAIS_EMAIL, LEGALLAIS_PASSWORD)
+    # Cookies de consentement (toujours injectés)
+    driver.add_cookies([
+        {"name": "CookiesConsent_ads",                     "value": "true", "url": "https://www.legallais.com"},
+        {"name": "CookiesConsent_individualCustomization",  "value": "true", "url": "https://www.legallais.com"},
+        {"name": "CookiesConsent_required",                "value": "1",    "url": "https://www.legallais.com"},
+    ])
+
+    # Tenter de restaurer la session du jour
+    session_restored = False
+    if load_cookies_for_driver(driver):
+        driver.get(BASE_URL)
+        if not driver.is_element_present(EMAIL_INPUT):
+            print("[Legallais] Session restaurée — connexion ignorée.")
+            session_restored = True
+        else:
+            print("[Legallais] Session expirée — nouvelle connexion en cours...")
+
+    if not session_restored:
+        print("[Legallais] Connexion en cours...")
+        _fill_and_submit_login(driver, LEGALLAIS_EMAIL, LEGALLAIS_PASSWORD)
+        save_cookies_from_driver(driver)
 
     print("Navigation aux adresses.")
     _navigate_to_addresses(driver)

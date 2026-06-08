@@ -12,11 +12,10 @@ sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 from botasaurus.browser import browser, Driver
-from core.config import PROFILES_DIR
-from auth.legallais.cookie_manager_legallais import SESSION_FILE
+from auth.legallais.cookie_manager_legallais import SESSION_FILE, SESSION_DIR
 
-USERNAME = os.getenv("User") or os.getenv("User_P1")
-PASSWORD = os.getenv("Password") or os.getenv("Password_P1")
+USERNAME = os.getenv("User_P1") or os.getenv("User")
+PASSWORD = os.getenv("Password_P1") or os.getenv("Password")
 
 LOGIN_URL = "https://www.legallais.com/user/connection"
 SEL_EMAIL = "input[name='connexion[login]'], input[type='text'], #connection-id"
@@ -27,7 +26,7 @@ SEL_POST_LOGIN = "ol.c-breadcrumb"
 
 def _save_session_from_driver(driver: Driver) -> None:
     """Extrait les cookies Botasaurus et les sauvegarde au format Playwright storage_state."""
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
     raw_cookies = driver.get_cookies()
     pw_cookies = []
@@ -46,7 +45,7 @@ def _save_session_from_driver(driver: Driver) -> None:
     storage_state = {"cookies": pw_cookies, "origins": []}
     with open(SESSION_FILE, "w", encoding="utf-8") as f:
         json.dump(storage_state, f, indent=2)
-    print(f"Session Legallais sauvegardée : {SESSION_FILE}")
+    print(f"Session Legallais sauvegardée : {SESSION_FILE.name}")
 
 
 @browser(headless=False, block_images=False)
@@ -106,7 +105,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if SESSION_FILE.exists():
-        print(f"Session existante : {SESSION_FILE}")
+        print(f"Session existante : {SESSION_FILE.name}")
         answer = input("Forcer une nouvelle connexion ? (o/N) : ").strip().lower()
         if answer != "o":
             print("Connexion annulée.")
