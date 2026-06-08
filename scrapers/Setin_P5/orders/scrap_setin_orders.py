@@ -3,7 +3,7 @@ Orchestrateur du scraper commandes Setin (site P5).
 
 Rôle :
     Point d'entrée pour extraire l'historique des commandes Setin sur une plage
-    de dates et les enregistrer en SQLite (setin.db).
+    de dates et les enregistrer en MariaDB.
 
 Type : commandes.
 
@@ -34,7 +34,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from css_selectors.setin import Selectors
 from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
 from core.logger import log_exception
-from db.sqlite_db import init_site_db, insert_order
+from db.mariadb_db import init_site_db, insert_order
 
 # ─── Import du moteur CSS (compatible package et script standalone) ─────────────
 
@@ -52,7 +52,7 @@ class SetinOrderScraper(_SetinCSS):
     def __init__(self, date_from: datetime, date_to: datetime, csv_path: str | Path | None = None) -> None:
         super().__init__(date_from, date_to)
         self._csv_path = None  # Compat GUI — export CSV à la demande uniquement
-        self._db_conn = None  # Connexion sqlite3, ouverte dans run()
+        self._db_conn = None  # connexion MariaDB (sentinel), initialisée dans run()
 
     # ─── Point d'entrée principal ─────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ class SetinOrderScraper(_SetinCSS):
         try:
             self._db_conn = init_site_db("setin")
         except Exception as exc:
-            self.log.warning("SQLite non initialisée : %s", exc)
+            self.log.warning("MariaDB non initialisée : %s", exc)
             self._db_conn = None
 
         storage_path = PROFILES_DIR / "setin" / "session.json"
@@ -254,12 +254,12 @@ class SetinOrderScraper(_SetinCSS):
     # ─── Persistance SQLite ───────────────────────────────────────────────────
 
     def _save_to_db(self, data: dict) -> None:
-        """Enregistre une commande en SQLite."""
+        """Enregistre une commande en MariaDB."""
         if self._db_conn is not None:
             try:
                 insert_order(self._db_conn, "setin", data)
             except Exception as exc:
-                self.log.debug("SQLite commande ignorée : %s", exc)
+                self.log.debug("MariaDB commande ignorée : %s", exc)
 
 
 # ─── Factory et CLI ───────────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ def _parse_date(s: str) -> datetime:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Scraper commandes Setin → SQLite")
+    parser = argparse.ArgumentParser(description="Scraper commandes Setin → MariaDB")
     parser.add_argument("--date-from", dest="date_from", help="JJ/MM/AAAA")
     parser.add_argument("--date-to", dest="date_to", help="JJ/MM/AAAA")
     args = parser.parse_args()

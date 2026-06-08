@@ -3,7 +3,7 @@ Orchestrateur du scraper suivi / tracking Legallais (site P1).
 
 Rôle :
     Parcourt les commandes des 7 derniers jours (fenêtre par défaut), extrait
-    transporteur, lien de suivi, poids, reliquat et persiste en SQLite.
+    transporteur, lien de suivi, poids, reliquat et persiste en MariaDB.
 
 Type : suivi (tracking).
 
@@ -28,7 +28,7 @@ from datetime import datetime
 
 from botasaurus.browser import browser, Driver
 from dotenv import load_dotenv
-from db.sqlite_db import init_site_db, insert_tracking as _db_insert_tracking
+from db.mariadb_db import init_site_db, insert_tracking as _db_insert_tracking
 
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
 try:
@@ -120,7 +120,7 @@ def main(driver: Driver, _data=None):
             driver.get(BASE_URL + cmd['link'], timeout=10)
             driver.wait_for_page_to_be(BASE_URL + cmd['link'], 3)
             Commande = get_Info(driver, cmd)
-            print(f"Écriture de la commande {Commande} en SQLite")
+            print(f"Écriture de la commande {Commande} en MariaDB")
             persist_tracking(Commande)
         except Exception as e:
             log_exception(today, e, f"érreur page {cmd['link']}")

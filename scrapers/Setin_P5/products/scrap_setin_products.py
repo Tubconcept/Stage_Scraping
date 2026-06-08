@@ -39,7 +39,7 @@ from css_selectors.setin import Selectors
 from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
 from core.base_scraper import BaseScraper
 from core.logger import log_exception
-from db.sqlite_db import init_site_db, insert_product, get_scraped_product_urls
+from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls
 try:
     from .scraper_setin_products import SetinProductScraper as _SetinCSS
     from ..orders.scraper_setin_orders import SetinOrderScraper as _OrderCSS
@@ -72,7 +72,7 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
         if not self._username or not self._password:
             self.log.warning("User_P5 ou Password_P5 non défini dans .env")
         self._csv_path: Path | None = None  # Compat GUI — export CSV à la demande uniquement
-        self._db_conn = None  # Connexion sqlite3, ouverte dans run()
+        self._db_conn = None  # connexion MariaDB (sentinel), initialisée dans run()
         # Mode « dates » : les URLs viennent des commandes, pas du menu catalogue
         self._use_order_dates = date_from is not None and date_to is not None
         if self._use_order_dates:
@@ -97,16 +97,16 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
             try:
                 insert_product(self._db_conn, "setin", row)
             except Exception as exc:
-                self.log.debug("SQLite produit ignoré : %s", exc)
+                self.log.debug("MariaDB produit ignoré : %s", exc)
 
     # ─── Point d'entrée principal ─────────────────────────────────────────────
 
     async def run(self, limit_products: int | None = None) -> None:
-        """Lance le scraping : session → connexion → catalogue ou mode dates → SQLite."""
+        """Lance le scraping : session → connexion → catalogue ou mode dates → MariaDB."""
         try:
             self._db_conn = init_site_db("setin")
         except Exception as exc:
-            self.log.warning("Base SQLite non initialisée : %s", exc)
+            self.log.warning("Base MariaDB non initialisée : %s", exc)
             self._db_conn = None
 
         # Restauration de la session Playwright (cookies) si disponible
@@ -263,7 +263,7 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
                 self._db_conn = None
             await self.close()
 
-        self.log.info("Terminé — %d produit(s) enregistré(s) en SQLite", rows_written)
+        self.log.info("Terminé — %d produit(s) enregistré(s) en MariaDB", rows_written)
 
 
 # ─── Factory et CLI ───────────────────────────────────────────────────────────
@@ -292,7 +292,7 @@ def _parse_date(s: str) -> datetime:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Scraper produits Setin → SQLite")
+    parser = argparse.ArgumentParser(description="Scraper produits Setin → MariaDB")
     parser.add_argument("--category", default="", help="Catégorie niveau 1 (mode catalogue)")
     parser.add_argument("--date-from", dest="date_from", help="JJ/MM/AAAA (mode commandes)")
     parser.add_argument("--date-to", dest="date_to", help="JJ/MM/AAAA (mode commandes)")

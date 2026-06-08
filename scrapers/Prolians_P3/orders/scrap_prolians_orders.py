@@ -25,7 +25,7 @@ from auth.prolians.cookie_manager import ensure_logged_in
 from scrapers.Prolians_P3.orders.scraper_prolians_orders import (
     navigate_to_orders, collect_orders, get_info, log_exception
 )
-from db.sqlite_db import init_site_db, insert_order as _db_insert_order
+from db.mariadb_db import init_site_db, insert_order as _db_insert_order
 
 ROOT = PROJECT_ROOT
 load_dotenv(ROOT / ".env")
@@ -54,8 +54,8 @@ def persist_order(data_dict):
     }
     try:
         _db_insert_order(_prolians_orders_db(), "prolians", row)
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DB ERROR] persist_order: {exc}")
 
 
 # Connexion SQLite réutilisée sur toute la session CLI
@@ -75,7 +75,7 @@ def _prolians_orders_db():
 # =============================
 
 def main():
-    """Boucle principale : saisie des dates → collecte → détail → SQLite."""
+    """Boucle principale : saisie des dates → collecte → détail → MariaDB."""
     inputSup = input("Fournir la date supérieure de l'intervalle (format d/m/yyyy) : ")
     inputInf = input("Fournir la date inférieure de l'intervalle (format d/m/yyyy) : ")
 
@@ -116,12 +116,12 @@ def main():
                 data = get_info(page, order)
                 if data:
                     persist_order(data)
-                    print(f"  {order['webref']} -> SQLite")
+                    print(f"  {order['webref']} -> MariaDB")
             except Exception as e:
                 log_exception(today, e, f"Commande {order['webref']}")
 
         browser.close()
-        print("\nCommandes enregistrées en SQLite (prolians.db)")
+        print("\nCommandes enregistrées en MariaDB")
 
 
 if __name__ == "__main__":

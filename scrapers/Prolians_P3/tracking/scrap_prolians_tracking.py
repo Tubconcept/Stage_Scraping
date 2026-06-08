@@ -25,7 +25,7 @@ from core.config import TRACKING_CSV_HEADERS
 from scrapers.Prolians_P3.tracking.scraper_prolians_tracking import (
     navigate_to_orders, collect_orders_with_tracking, get_order_detail, log_exception
 )
-from db.sqlite_db import init_site_db, insert_tracking as _db_insert_tracking
+from db.mariadb_db import init_site_db, insert_tracking as _db_insert_tracking
 
 ROOT = PROJECT_ROOT
 load_dotenv(ROOT / ".env")
@@ -60,8 +60,8 @@ def _persist_tracking(db_conn, row: list) -> None:
         return
     try:
         _db_insert_tracking(db_conn, "prolians", _row_to_dict(row))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DB ERROR] _persist_tracking: {exc}")
 
 
 def _build_row(webref: str, order: dict, detail: dict | None) -> list:
@@ -95,7 +95,7 @@ def _build_row(webref: str, order: dict, detail: dict | None) -> list:
 # =============================
 
 def main():
-    """Exécution CLI : connexion → collecte → détail tracking → SQLite."""
+    """Exécution CLI : connexion → collecte → détail tracking → MariaDB."""
     date_inf, date_sup = _tracking_window()
 
     print(f"Tracking : {date_inf.strftime('%d/%m/%Y')} → {date_sup.strftime('%d/%m/%Y')}")
@@ -104,7 +104,7 @@ def main():
     try:
         db_conn = init_site_db("prolians")
     except Exception as exc:
-        print(f"Base SQLite Prolians non initialisée : {exc}")
+        print(f"Base MariaDB Prolians non initialisée : {exc}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -130,7 +130,7 @@ def main():
                 detail = get_order_detail(page, order)
                 row = _build_row(webref, order, detail)
                 _persist_tracking(db_conn, row)
-                print(f"  {webref} → SQLite")
+                print(f"  {webref} → MariaDB")
             except Exception as e:
                 log_exception(e, f"Commande {webref}")
                 # Ne pas perdre la commande : ligne partielle avec webref + date liste
@@ -141,7 +141,7 @@ def main():
         browser.close()
         if db_conn:
             db_conn.close()
-        print("\nTracking enregistré en SQLite (prolians.db)")
+        print("\nTracking enregistré en MariaDB")
 
 
 if __name__ == '__main__':
@@ -180,7 +180,7 @@ class ProlianTrackingScraper:
         try:
             db_conn = init_site_db("prolians")
         except Exception as exc:
-            print(f"Base SQLite Prolians non initialisée : {exc}")
+            print(f"Base MariaDB Prolians non initialisée : {exc}")
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
@@ -208,7 +208,7 @@ class ProlianTrackingScraper:
                     detail = get_order_detail(page, order)
                     row = _build_row(webref, order, detail)
                     _persist_tracking(db_conn, row)
-                    print(f"  {webref} → SQLite")
+                    print(f"  {webref} → MariaDB")
                 except Exception as e:
                     log_exception(e, f"Commande {webref}")
                     row = _build_row(webref, order, None)
@@ -217,7 +217,7 @@ class ProlianTrackingScraper:
             browser.close()
             if db_conn:
                 db_conn.close()
-            print("Tracking enregistré en SQLite (prolians.db)")
+            print("Tracking enregistré en MariaDB")
 
     def request_stop(self):
         self._stop_requested = True

@@ -34,7 +34,7 @@ from scrapers.Prolians_P3.products.scraper_prolians_products import (
     extract_sitemap_urls, extract_product_from_dom,
     FIELDNAMES, SITEMAP_INDEX
 )
-from db.sqlite_db import init_site_db, insert_product, get_scraped_product_urls
+from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls
 
 ROOT = PROJECT_ROOT
 load_dotenv(ROOT / ".env")
@@ -67,12 +67,12 @@ def main():
     crash_file = f"log/crash_products{suffix}.txt"
     os.makedirs("log", exist_ok=True)
 
-    # Base SQLite site « prolians » (produits déjà scrappés)
+    # Base MariaDB site « prolians » (produits déjà scrappés)
     db_conn = None
     try:
         db_conn = init_site_db("prolians")
     except Exception as _exc:
-        print(f" Base SQLite Prolians non initialisée : {_exc}")
+        print(f" Base MariaDB Prolians non initialisée : {_exc}")
 
     count_produit = 0
     with sync_playwright() as p:
@@ -179,12 +179,12 @@ def main():
                 count_produit += 1
                 print(f"[{count_produit}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
         except KeyboardInterrupt:
-            print(f"\n Arrêt — {count_produit} produit(s) enregistré(s) en SQLite")
+            print(f"\n Arrêt — {count_produit} produit(s) enregistré(s) en MariaDB")
 
         browser.close()
         if db_conn:
             db_conn.close()
-        print(f"\n {count_produit} produit(s) enregistré(s) en SQLite (prolians.db)")
+        print(f"\n {count_produit} produit(s) enregistré(s) en MariaDB")
 
 
 if __name__ == "__main__":
@@ -222,7 +222,7 @@ class ProlianProductScraper:
         try:
             db_conn = init_site_db("prolians")
         except Exception as _exc:
-            print(f" Base SQLite Prolians non initialisée : {_exc}")
+            print(f" Base MariaDB Prolians non initialisée : {_exc}")
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
@@ -303,7 +303,7 @@ class ProlianProductScraper:
             browser.close()
             if db_conn:
                 db_conn.close()
-            print(f"\n {count} produit(s) enregistré(s) en SQLite (prolians.db)")
+            print(f"\n {count} produit(s) enregistré(s) en MariaDB")
 
 
 def create_scraper() -> ProlianProductScraper:

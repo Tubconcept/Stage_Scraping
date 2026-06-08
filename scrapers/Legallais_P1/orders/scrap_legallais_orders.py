@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
-from db.sqlite_db import init_site_db, insert_order as _db_insert_order
+from db.mariadb_db import init_site_db, insert_order as _db_insert_order
 
 load_dotenv(_PROJECT_ROOT / ".env")
 

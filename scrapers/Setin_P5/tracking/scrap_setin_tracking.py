@@ -4,7 +4,7 @@ Orchestrateur du scraper suivi / tracking Setin (site P5).
 Rôle :
     Parcourt les commandes récentes (fenêtre glissante ou plage de dates),
     extrait les informations de suivi colis (transporteur, lien, poids, reliquat)
-    et les enregistre en SQLite (table tracking de setin.db).
+    et les enregistre en MariaDB (table tracking de setin.db).
 
 Type : suivi (tracking / expédition).
 
@@ -37,7 +37,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from css_selectors.setin import Selectors
 from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
 from core.logger import log_exception
-from db.sqlite_db import init_site_db, insert_tracking
+from db.mariadb_db import init_site_db, insert_tracking
 
 try:
     from .scraper_setin_tracking import SetinTrackingScraper as _SetinCSS
@@ -56,14 +56,14 @@ class SetinTrackingScraper(_SetinCSS):
     ) -> None:
         super().__init__(date_from=date_from, date_to=date_to)
         self._csv_path = None  # GUI compat — CSV export is on-demand only
-        self._db_conn = None  # sqlite3.Connection, opened in run()
+        self._db_conn = None  # MariaDB sentinel, initialised in run()
 
     async def run(self) -> None:
         """Lance le scraping du suivi Setin."""
         try:
             self._db_conn = init_site_db("setin")
         except Exception as exc:
-            self.log.warning("SQLite non initialisée : %s", exc)
+            self.log.warning("MariaDB non initialisée : %s", exc)
             self._db_conn = None
 
         storage_path = PROFILES_DIR / "setin" / "session.json"
@@ -245,7 +245,7 @@ class SetinTrackingScraper(_SetinCSS):
     # ─── Persistance SQLite ───────────────────────────────────────────────────
 
     def _save_to_db(self, data: dict) -> None:
-        """Enregistre le suivi en SQLite."""
+        """Enregistre le suivi en MariaDB."""
         row = {
             "id_cmd": data.get("id_cmd", ""),
             "ref_cmd": data.get("ref_cmd", ""),
@@ -262,7 +262,7 @@ class SetinTrackingScraper(_SetinCSS):
             try:
                 insert_tracking(self._db_conn, "setin", row)
             except Exception as exc:
-                self.log.debug("SQLite tracking ignoré : %s", exc)
+                self.log.debug("MariaDB tracking ignoré : %s", exc)
 
 
 # ─── Factory et CLI ───────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ def _parse_date(s: str) -> datetime:
 def main() -> None:
     import asyncio
 
-    parser = argparse.ArgumentParser(description="Scraper tracking Setin → SQLite")
+    parser = argparse.ArgumentParser(description="Scraper tracking Setin → MariaDB")
     parser.add_argument("--date-from", dest="date_from", help="JJ/MM/AAAA")
     parser.add_argument("--date-to", dest="date_to", help="JJ/MM/AAAA")
     parser.add_argument("--days", type=int, default=7, help="Si pas de dates : N derniers jours")

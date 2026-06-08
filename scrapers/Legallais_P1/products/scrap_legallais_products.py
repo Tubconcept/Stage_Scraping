@@ -3,7 +3,7 @@ Orchestrateur du scraper produits Legallais (site P1).
 
 Rôle :
     Coordonne la collecte des URLs produits (phase 1) et l'extraction parallèle
-    ou séquentielle (phase 2), puis persiste les variantes en SQLite (legallais.db).
+    ou séquentielle (phase 2), puis persiste les variantes en MariaDB.
 
 Type : produits (catalogue browse ou recherche par références JSON).
 
@@ -35,7 +35,7 @@ from botasaurus.browser import browser, Driver
 from core.config import JSON_DIR, CSV_HEADERS
 from css_selectors.legallais import BASE_URL, SELECTORS, CATEGORY_NAMES
 from core.utils import logger
-from db.sqlite_db import init_site_db, insert_product, get_scraped_product_urls
+from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls
 
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
 try:
@@ -242,7 +242,7 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
     try:
         db_conn = init_site_db("legallais")
     except Exception as _exc:
-        logger.warning(f"[Worker {batch_id}] SQLite non initialisée : {_exc}")
+        logger.warning(f"[Worker {batch_id}] MariaDB non initialisée : {_exc}")
 
     logger.info(f"[Worker {batch_id}] Démarrage — {len(products)} produits à traiter")
     ok, err = 0, 0
@@ -262,7 +262,7 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
                             mapped["product_fournisseur_url"] = item.get("url", "")
                             insert_product(db_conn, "legallais", mapped)
                         except Exception as _db_exc:
-                            logger.debug(f"[Worker {batch_id}] SQLite ignoré : {_db_exc}")
+                            logger.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
                 ok += 1
                 logger.info(f"[Worker {batch_id}] ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
             else:
@@ -297,7 +297,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
     try:
         db_conn = init_site_db("legallais")
     except Exception as _exc:
-        logger.warning(f"Base SQLite Legallais non initialisée : {_exc}")
+        logger.warning(f"Base MariaDB Legallais non initialisée : {_exc}")
 
     if mode == "browse":
         driver.get(BASE_URL)
@@ -362,7 +362,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                                             mapped["product_fournisseur_url"] = full_href
                                             insert_product(db_conn, "legallais", mapped)
                                         except Exception as _db_exc:
-                                            logger.debug(f"SQLite produit ignoré : {_db_exc}")
+                                            logger.debug(f"MariaDB produit ignoré : {_db_exc}")
                                 ok += 1
                                 ref = rows[0].get("productRef", "?")
                                 logger.info(f"  ✓ [{ok}] {ref} — {len(rows)} ligne(s) écrite(s)")
@@ -373,7 +373,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                         except Exception as ex:
                             if _session_perdue(ex):
                                 logger.error(
-                                    f"Session perdue — {ok} produits sauvegardés en SQLite"
+                                    f"Session perdue — {ok} produits sauvegardés en MariaDB"
                                 )
                                 if db_conn:
                                     db_conn.close()
@@ -383,7 +383,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
 
             except Exception as ex:
                 if _session_perdue(ex):
-                    logger.error(f"Session perdue — {ok} produits sauvegardés en SQLite")
+                    logger.error(f"Session perdue — {ok} produits sauvegardés en MariaDB")
                     if db_conn:
                         db_conn.close()
                     return
@@ -407,7 +407,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                                 mapped["product_fournisseur_url"] = item.get("url", "")
                                 insert_product(db_conn, "legallais", mapped)
                             except Exception as _db_exc:
-                                logger.debug(f"SQLite produit ignoré : {_db_exc}")
+                                logger.debug(f"MariaDB produit ignoré : {_db_exc}")
                     logger.info(f"  ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
                 else:
                     logger.warning(f"  ✗ Aucune donnée pour {item.get('url','')}")
@@ -478,11 +478,11 @@ Exemples:
             "mode": "search",
         })
 
-    logger.info("Scraping terminé — résultat en SQLite (legallais.db)")
+    logger.info("Scraping terminé — résultat en MariaDB")
 
 
 def run_interactive():
-    logger.info("Démarrage scraping produits (browse) → SQLite legallais.db")
+    logger.info("Démarrage scraping produits (browse) → MariaDB legallais.db")
     _scrape_direct({"products": [], "mode": "browse"})  # type: ignore[call-arg]
 
 

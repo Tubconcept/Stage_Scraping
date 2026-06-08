@@ -73,7 +73,7 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime) -> str:
     from dotenv import load_dotenv
     from playwright.sync_api import sync_playwright
     from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_session_state
-    from db.sqlite_db import init_site_db, insert_order as _db_insert_order
+    from db.mariadb_db import init_site_db, insert_order as _db_insert_order
     from scrapers.Legallais_P1.orders.scraper_legallais_orders import (
         BASE_URL, NEXT_PAGE_BUTTON, log_exception, get_url_cmd, check_date, get_Info,
     )
@@ -170,7 +170,7 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime) -> str:
     from dotenv import load_dotenv
     from playwright.sync_api import sync_playwright
     from auth.prolians.cookie_manager import ensure_logged_in
-    from db.sqlite_db import init_site_db, insert_order as _db_insert_order
+    from db.mariadb_db import init_site_db, insert_order as _db_insert_order
     from scrapers.Prolians_P3.orders.scraper_prolians_orders import (
         navigate_to_orders, collect_orders, get_info, log_exception,
     )
@@ -210,8 +210,8 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime) -> str:
                     }
                     try:
                         _db_insert_order(db_conn, "prolians", row)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        print(f"[DB ERROR] P3 insert_order: {exc}")
             except Exception as exc:
                 log_exception(today_str, exc, f"Commande {order.get('webref', '?')}")
 
@@ -526,19 +526,17 @@ class ScraperApp(tk.Tk):
             "suivi":     ("tracking",  TRACKING_CSV_HEADERS),
         }
         table_suffix, headers = _ACTION_INFO[key]
-        table = f"{site_key}_{table_suffix}"
+        from db.mariadb_db import SITE_PREFIX, export_table_to_csv
+        table = f"{SITE_PREFIX[site_key]}_{table_suffix}"
 
-        # Read all rows from SQLite and write to a temporary CSV
+        # Read all rows from MariaDB and write to a temporary CSV
         try:
-            from db.sqlite_db import init_site_db, export_table_to_csv
-            conn = init_site_db(site_key)
             with tempfile.NamedTemporaryFile(
                 suffix=".csv", dir=str(CSV_DIR), delete=False
             ) as _tmp:
                 tmp_path = Path(_tmp.name)
             CSV_DIR.mkdir(parents=True, exist_ok=True)
-            n_rows = export_table_to_csv(conn, table, headers, tmp_path)
-            conn.close()
+            n_rows = export_table_to_csv(None, table, headers, tmp_path)
         except Exception as exc:
             messagebox.showerror("Erreur base de données",
                                  f"Impossible de lire {table} :\n{exc}")

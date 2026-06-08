@@ -109,11 +109,5 @@ CSV_DIR = DIRECTORY / "csv"                    # Exports CSV ponctuels (Legallai
 JSON_DIR = DIRECTORY / "json"                  # Données JSON intermédiaires si besoin
 PROFILES_DIR = DIRECTORY / "playwright_profiles"  # Sessions navigateur par site
 
-# ─── Bases SQLite — une par fournisseur ─────────────────────────────────────
-SETIN_DB_PATH     = DIRECTORY / "setin.db"
-LEGALLAIS_DB_PATH = DIRECTORY / "legallais.db"
-PROLIANS_DB_PATH  = DIRECTORY / "prolians.db"
-
-
 # Résolution d'écran simulée pour Playwright (évite les layouts mobile)
 VIEWPORT = {"width": 1920, "height": 1080}
