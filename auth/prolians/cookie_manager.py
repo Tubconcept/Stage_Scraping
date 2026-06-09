@@ -103,7 +103,7 @@ def login(page: Page, username: str, password: str) -> bool:
         pwd_input.wait_for(state="visible", timeout=10000)
         pwd_input.fill(password)
         page.locator(Selectors.submit_button).click()
-        page.wait_for_load_state("domcontentloaded", timeout=25000)
+        page.wait_for_timeout(2000)
     except Exception as e:
         print(f"Étape mot de passe échouée : {e}")
         return False
