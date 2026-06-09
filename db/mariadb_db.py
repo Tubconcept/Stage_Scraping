@@ -25,8 +25,7 @@ import time
 from datetime import date as _date, datetime as _datetime
 from pathlib import Path
 
-import mysql.connector
-from mysql.connector import pooling, Error as MySQLError
+import pymysql
 from dotenv import load_dotenv
 
 from core.config import CSV_HEADERS, ORDERS_CSV_HEADERS, TRACKING_CSV_HEADERS
@@ -43,39 +42,29 @@ SITE_PREFIX: dict[str, str] = {
     "setin":     "P5",
 }
 
-# ─── Pool de connexions (singleton) ──────────────────────────────────────────
+# ─── Paramètres de connexion ──────────────────────────────────────────────────
 
-_pool: pooling.MySQLConnectionPool | None = None
-
-
-def _get_pool() -> pooling.MySQLConnectionPool:
-    global _pool
-    if _pool is None:
-        _pool = pooling.MySQLConnectionPool(
-            pool_name="scraper_pool",
-            pool_size=5,           # 5 connexions max simultanées
-            pool_reset_session=True,
-            host=os.getenv("DB_HOST"),
-            port=int(os.getenv("DB_PORT", 3306)),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            database=os.getenv("DB_NAME"),
-            charset="utf8mb4",
-            collation="utf8mb4_unicode_ci",
-            connect_timeout=10,
-        )
-        _log.info("Pool MariaDB initialisé (%s:%s/%s)",
-                  os.getenv("DB_HOST"), os.getenv("DB_PORT", 3306), os.getenv("DB_NAME"))
-    return _pool
+def _conn_params() -> dict:
+    return dict(
+        host=os.getenv("DB_HOST"),
+        port=int(os.getenv("DB_PORT", 3306)),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME"),
+        charset="utf8mb4",
+        connect_timeout=10,
+        autocommit=False,
+    )
 
 
-def _get_conn() -> mysql.connector.MySQLConnection:
-    """Retourne une connexion du pool avec retry automatique (3 tentatives)."""
+def _get_conn() -> pymysql.connections.Connection:
+    """Ouvre une connexion PyMySQL avec retry automatique (3 tentatives)."""
     last_err: Exception | None = None
     for attempt in range(1, 4):
         try:
-            return _get_pool().get_connection()
-        except MySQLError as e:
+            conn = pymysql.connect(**_conn_params())
+            return conn
+        except pymysql.Error as e:
             last_err = e
             _log.warning("Connexion MariaDB échouée (tentative %d/3) : %s", attempt, e)
             time.sleep(attempt * 2)
@@ -88,7 +77,7 @@ class _ConnSentinel:
     """Remplace sqlite3.Connection dans les scrapers existants.
 
     Truthy → les guards `if db_conn:` passent.
-    `.close()` → no-op (le pool gère le cycle de vie des connexions).
+    `.close()` → no-op.
     """
     def close(self) -> None:
         pass
@@ -97,33 +86,57 @@ class _ConnSentinel:
         return True
 
     def __repr__(self) -> str:
-        return "<MariaDB pool sentinel>"
+        return "<MariaDB sentinel>"
 
 
 _SENTINEL = _ConnSentinel()
 
 
+# ─── Création des tables ──────────────────────────────────────────────────────
+
+def _ensure_tables(site: str) -> None:
+    """Crée les 3 tables du site si elles n'existent pas encore."""
+    prefix = SITE_PREFIX[site]
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            for kind, headers, unique_col in [
+                ("products", CSV_HEADERS, None),
+                ("orders",   ORDERS_CSV_HEADERS,   "id_cmd"),
+                ("tracking", TRACKING_CSV_HEADERS, "id_cmd"),
+            ]:
+                table = f"{prefix}_{kind}"
+                col_defs = ",\n    ".join(f"`{h}` TEXT" for h in headers)
+                unique_clause = f",\n    UNIQUE KEY `uq_{table}` (`{unique_col}`(255))" if unique_col else ""
+                cur.execute(
+                    f"CREATE TABLE IF NOT EXISTS `{table}` (\n"
+                    f"    `id` INT AUTO_INCREMENT PRIMARY KEY,\n"
+                    f"    {col_defs}{unique_clause}\n"
+                    f") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+                )
+                _log.debug("Table prête : %s", table)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ─── Initialisation publique (compat sqlite_db) ───────────────────────────────
 
 def init_site_db(site: str) -> _ConnSentinel:
-    """Vérifie que le site est connu et que la connexion MariaDB est joignable.
+    """Vérifie la connexion MariaDB et crée les tables si nécessaire.
 
-    Retourne un sentinel truthy pour que les guards `if conn:` et `conn.close()`
-    des scrapers continuent de fonctionner sans modification.
     Lève ValueError si le site est inconnu, ConnectionError si la DB est injoignable.
     """
     if site not in SITE_PREFIX:
         raise ValueError(f"Unknown site: {site!r}. Choose from {list(SITE_PREFIX)}")
-    conn = _get_conn()
-    conn.close()
-    _log.info("init_site_db(%s) OK — pool MariaDB prêt", site)
+    _ensure_tables(site)
+    _log.info("init_site_db(%s) OK — tables prêtes", site)
     return _SENTINEL
 
 
 # ─── Helpers internes ─────────────────────────────────────────────────────────
 
 def _table(site: str, kind: str) -> str:
-    """Retourne le nom de table MariaDB, ex: 'P1_products'."""
     prefix = SITE_PREFIX.get(site)
     if prefix is None:
         raise ValueError(f"Unknown site: {site!r}")
@@ -137,31 +150,27 @@ def _insert(
     row: dict,
     conflict: str = "IGNORE",
 ) -> None:
-    """INSERT générique avec stratégie de conflit (IGNORE ou REPLACE).
-
-    Utilise des placeholders %s (anti SQL-injection).
-    Récupère/relâche la connexion depuis le pool à chaque appel.
-    """
+    """INSERT générique avec stratégie de conflit (IGNORE ou REPLACE)."""
     table  = _table(site, kind)
     cols   = ", ".join(f"`{h}`" for h in headers)
     ph     = ", ".join("%s" for _ in headers)
     values = [str(row.get(h, "") or "") for h in headers]
 
     if conflict == "REPLACE":
-        # UPDATE en place → l'id AUTO_INCREMENT original est conservé (pas de DELETE+INSERT)
         updates = ", ".join(f"`{h}`=VALUES(`{h}`)" for h in headers)
         sql = f"INSERT INTO `{table}` ({cols}) VALUES ({ph}) ON DUPLICATE KEY UPDATE {updates}"
     else:
-        sql = f"INSERT {conflict} INTO `{table}` ({cols}) VALUES ({ph})"
+        sql = f"INSERT IGNORE INTO `{table}` ({cols}) VALUES ({ph})"
 
     conn = _get_conn()
     try:
-        cur = conn.cursor()
-        cur.execute(sql, values)
+        with conn.cursor() as cur:
+            cur.execute(sql, values)
         conn.commit()
-    except MySQLError as e:
+    except pymysql.Error as e:
         conn.rollback()
-        _log.error("_insert(%s, %s) échec : %s | row=%s", site, kind, e, row.get("id_cmd") or row.get("product_fournisseur_url", "?"))
+        _log.error("_insert(%s, %s) échec : %s | row=%s", site, kind, e,
+                   row.get("id_cmd") or row.get("product_fournisseur_url", "?"))
         raise
     finally:
         conn.close()
@@ -169,9 +178,66 @@ def _insert(
 
 # ─── Insertion publique ───────────────────────────────────────────────────────
 
-def insert_product(conn, site: str, row: dict) -> None:
+def insert_product(_conn, site: str, row: dict) -> None:
     """Insère une ligne produit (conn ignoré — compat sqlite_db)."""
     _insert(site, "products", CSV_HEADERS, row, conflict="IGNORE")
+
+
+def upsert_product(_conn, site: str, row: dict) -> None:
+    """INSERT si la référence est inconnue, UPDATE si elle existe déjà.
+
+    Critère d'identification (priorité décroissante) :
+      1. product_reference_fournisseur  — référence catalogue du fournisseur
+      2. product_fournisseur_url        — URL de la fiche produit (fallback)
+
+    Utilisé par les scrapers « mise à jour par références » pour éviter
+    les doublons sans modifier le schéma des tables.
+    """
+    ref = str(row.get("product_reference_fournisseur", "") or "").strip()
+    url = str(row.get("product_fournisseur_url", "") or "").strip()
+
+    if ref:
+        where_col, where_val = "product_reference_fournisseur", ref
+    elif url:
+        where_col, where_val = "product_fournisseur_url", url
+    else:
+        # Aucun identifiant → INSERT classique
+        _insert(site, "products", CSV_HEADERS, row, conflict="IGNORE")
+        return
+
+    table = _table(site, "products")
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT `id` FROM `{table}` WHERE `{where_col}` = %s LIMIT 1",
+                (where_val,),
+            )
+            existing = cur.fetchone()
+
+            if existing:
+                row_id = existing[0]
+                set_clause = ", ".join(f"`{h}`=%s" for h in CSV_HEADERS)
+                values = [str(row.get(h, "") or "") for h in CSV_HEADERS]
+                cur.execute(
+                    f"UPDATE `{table}` SET {set_clause} WHERE `id` = %s",
+                    values + [row_id],
+                )
+                _log.debug("upsert_product(%s) UPDATE id=%s ref=%s", site, row_id, where_val)
+            else:
+                cols = ", ".join(f"`{h}`" for h in CSV_HEADERS)
+                ph   = ", ".join("%s" for _ in CSV_HEADERS)
+                values = [str(row.get(h, "") or "") for h in CSV_HEADERS]
+                cur.execute(f"INSERT INTO `{table}` ({cols}) VALUES ({ph})", values)
+                _log.debug("upsert_product(%s) INSERT ref=%s", site, where_val)
+
+        conn.commit()
+    except pymysql.Error as e:
+        conn.rollback()
+        _log.error("upsert_product(%s) échec : %s | ref=%s", site, e, where_val)
+        raise
+    finally:
+        conn.close()
 
 
 def _is_valid_order_date(date_str: str) -> bool:
@@ -187,7 +253,7 @@ def _is_valid_order_date(date_str: str) -> bool:
     return False
 
 
-def insert_order(conn, site: str, row: dict) -> None:
+def insert_order(_conn, site: str, row: dict) -> None:
     """Insère une commande ; ignore les doublons et dates invalides (compat sqlite_db)."""
     date_str = str(row.get("date_cmd", "") or "")
     if not _is_valid_order_date(date_str):
@@ -196,22 +262,22 @@ def insert_order(conn, site: str, row: dict) -> None:
     _insert(site, "orders", ORDERS_CSV_HEADERS, row, conflict="IGNORE")
 
 
-def insert_tracking(conn, site: str, row: dict) -> None:
+def insert_tracking(_conn, site: str, row: dict) -> None:
     """Insère ou remplace une ligne de suivi (compat sqlite_db)."""
     _insert(site, "tracking", TRACKING_CSV_HEADERS, row, conflict="REPLACE")
 
 
 # ─── Reprise après interruption ───────────────────────────────────────────────
 
-def get_scraped_product_urls(conn, site: str) -> set[str]:
+def get_scraped_product_urls(_conn, site: str) -> set[str]:
     """Retourne toutes les URL produit déjà en base (compat sqlite_db)."""
     table = _table(site, "products")
     conn_db = _get_conn()
     try:
-        cur = conn_db.cursor()
-        cur.execute(f"SELECT `product_fournisseur_url` FROM `{table}`")
-        return {r[0] for r in cur.fetchall() if r[0]}
-    except MySQLError as e:
+        with conn_db.cursor() as cur:
+            cur.execute(f"SELECT `product_fournisseur_url` FROM `{table}`")
+            return {r[0] for r in cur.fetchall() if r[0]}
+    except pymysql.Error as e:
         _log.error("get_scraped_product_urls(%s) échec : %s", site, e)
         return set()
     finally:
@@ -220,17 +286,17 @@ def get_scraped_product_urls(conn, site: str) -> set[str]:
 
 # ─── Export CSV ───────────────────────────────────────────────────────────────
 
-def export_table_to_csv(conn, table: str, headers: list[str], out_path: Path) -> int:
+def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path) -> int:
     """Exporte toute la table vers un CSV (séparateur ;). Compat sqlite_db."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ", ".join(f"`{h}`" for h in headers)
 
     conn_db = _get_conn()
     try:
-        cur = conn_db.cursor()
-        cur.execute(f"SELECT {cols} FROM `{table}`")
-        rows = cur.fetchall()
-    except MySQLError as e:
+        with conn_db.cursor() as cur:
+            cur.execute(f"SELECT {cols} FROM `{table}`")
+            rows = cur.fetchall()
+    except pymysql.Error as e:
         _log.error("export_table_to_csv(%s) échec : %s", table, e)
         raise
     finally:

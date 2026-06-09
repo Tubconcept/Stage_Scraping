@@ -83,6 +83,13 @@ class Selectors:
     product_qty            = "p"
 
     # ══════════════════════════════════════════════════════════════════════════
+    # RECHERCHE PAR RÉFÉRENCE
+    # ══════════════════════════════════════════════════════════════════════════
+    search_url_template = "https://www.prolians.fr/search?q="   # + encoded ref
+    search_result_link  = 'a[data-testid="product-card/product-link"]'
+    search_result_ref   = 'span[data-testid="product-card/reference"]'
+
+    # ══════════════════════════════════════════════════════════════════════════
     # SUIVI LIVRAISON — page transporteur / colis
     # ══════════════════════════════════════════════════════════════════════════
     tracking_blocks        = "div.blocks .block"
