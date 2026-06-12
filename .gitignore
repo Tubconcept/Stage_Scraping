@@ -231,3 +231,4 @@ playwright_profiles/
 *.csv
 *.txt
 *.log
+*.bak
