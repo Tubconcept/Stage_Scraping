@@ -185,23 +185,43 @@ def get_info(page, order):
     prdt_data = []
     try:
         names_locs = page.locator(Selectors.product_name).all()
-        refs_locs  = page.locator(f"xpath={Selectors.product_ref_xpath}").all()
-        qtys_locs  = page.locator(f"xpath={Selectors.prodcut_qty_xpath}").all()
+
+        # XPath original → fallback sur tout élément si aucun ne correspond
+        refs_locs = page.locator(f"xpath={Selectors.product_ref_xpath}").all()
+        if not refs_locs:
+            refs_locs = page.locator(
+                "xpath=//*[contains(., 'Réf. PROLIANS') and not(.//*[contains(., 'Réf. PROLIANS')])]"
+            ).all()
+
+        # Quantité : badge CSS → XPath → fallback large
+        qtys_locs = page.locator(Selectors.product_qty_badge).all()
+        if not qtys_locs:
+            qtys_locs = page.locator(f"xpath={Selectors.prodcut_qty_xpath}").all()
+        if not qtys_locs:
+            qtys_locs = page.locator(
+                "xpath=//*[contains(., 'Qt :') and not(.//*[contains(., 'Qt :')])]"
+            ).all()
 
         for i in range(len(names_locs)):
             try:
                 name = clean_text(names_locs[i].inner_text(timeout=3000)) if i < len(names_locs) else ""
+                name = name.replace(":", "-")
 
-                ref_txt = refs_locs[i].inner_text(timeout=3000).strip() if i < len(refs_locs) else ""
-                m_ref = re.search(r"Réf\. PROLIANS\s*[: ]\s*(\S+)", ref_txt)
-                ref_prdt = m_ref.group(1) if m_ref else ""
+                ref = ""
+                if i < len(refs_locs):
+                    ref_txt = refs_locs[i].inner_text(timeout=3000).strip()
+                    m_ref = re.search(r"Réf\.?\s+PROLIANS\s*[:\s]\s*(\S+)", ref_txt, re.IGNORECASE)
+                    if m_ref:
+                        ref = m_ref.group(1)
 
-                qty_txt = qtys_locs[i].inner_text(timeout=3000).strip() if i < len(qtys_locs) else ""
-                m_qty = re.search(r"Qt\s*:\s*(\d+)", qty_txt)
-                prdt_qty = m_qty.group(1) if m_qty else ""
+                qty = ""
+                if i < len(qtys_locs):
+                    qty_txt = qtys_locs[i].inner_text(timeout=3000).strip()
+                    m_qty = re.search(r"Qt\s*:\s*(\d+)", qty_txt, re.IGNORECASE)
+                    if m_qty:
+                        qty = m_qty.group(1)
 
-                # Segments séparés par « : » puis jointure par « , » entre lignes
-                prdt_data.append(f"{ref_prdt}:{name}:{prdt_qty}:")
+                prdt_data.append(f"{ref}:{name}:{qty}")
             except Exception as e:
                 log_exception(today, e, f"Produit ligne {i} de {webref}")
     except Exception as e:
@@ -215,5 +235,5 @@ def get_info(page, order):
         "ref_cmd":    ref_cmd,
         "date_cmd":   order.get("date", ""),
         "statut_cmd": order.get("status", ""),
-        "prdt_data":  ",".join(prdt_data),
+        "prdt_data":  "||".join(prdt_data),
     }

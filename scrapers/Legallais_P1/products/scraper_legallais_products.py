@@ -193,7 +193,7 @@ class LegallaisScraper:
 
     # ─── Extraction page produit ──────────────────────────────────────────────
 
-    def scrape_product(self) -> List[Dict]:
+    def scrape_product(self, group_index: int = 1) -> List[Dict]:
         from css_selectors.legallais import SELECTORS
         from core.utils import clean_text
         d = self._driver
@@ -431,16 +431,55 @@ class LegallaisScraper:
         except Exception:
             pass
 
-        # Produits associés / cross-sell (séparateur ||)
+        # "Articles de la même gamme" — référence extraite de l'alt de l'image (ex: alt="wi341762" → 341762)
         cross_sell_refs: List[str] = []
         try:
-            cs_els = d.select_all(SELECTORS["cross_sell"], 1)
-            for cs_el in cs_els:
-                ref = re.sub(r"\D", "", cs_el.text).strip()
-                if ref and ref not in cross_sell_refs:
-                    cross_sell_refs.append(ref)
+            result = d.run_js("""
+                const refs = [];
+                const GAMME = /m[eê]me\\s+gamme|articles?\\s+associ[eé]s?|cross.?sell/i;
+                const sections = new Set();
+
+                // Conteneurs nommés connus
+                for (const sel of [
+                    'div.cross-sell', 'div[class*="gamme"]', 'section[class*="gamme"]',
+                    'div[class*="associated"]', 'section[class*="associated"]',
+                    'div[class*="similar"]', 'div[class*="related"]'
+                ]) {
+                    for (const el of document.querySelectorAll(sel)) sections.add(el);
+                }
+
+                // Recherche par titre de section si aucun conteneur trouvé
+                if (!sections.size) {
+                    for (const hd of document.querySelectorAll('h2, h3, h4, .section-title')) {
+                        if (GAMME.test(hd.textContent.trim())) {
+                            const parent = hd.closest('section, div.c-card, article') || hd.parentElement?.parentElement;
+                            if (parent) sections.add(parent);
+                        }
+                    }
+                }
+
+                for (const section of sections) {
+                    for (const img of section.querySelectorAll('img')) {
+                        const alt = img.getAttribute('alt') || '';
+                        const digits = alt.replace(/\\D/g, '').trim();
+                        if (digits && digits.length >= 4 && !refs.includes(digits)) {
+                            refs.push(digits);
+                        }
+                    }
+                }
+                return refs;
+            """)
+            cross_sell_refs = result if isinstance(result, list) else []
         except Exception:
-            pass
+            cross_sell_refs = []
+
+        # Nettoyage : supprimer le suffixe après "_" (ex: "693165_3" → "693165")
+        cleaned: List[str] = []
+        for ref in cross_sell_refs:
+            clean_ref = ref.split("_")[0] if "_" in ref else ref
+            if clean_ref and clean_ref not in cleaned:
+                cleaned.append(clean_ref)
+        cross_sell_refs = cleaned
 
         # Nom de marque (alt de l'image logo)
         brand_name = ""
@@ -471,7 +510,8 @@ class LegallaisScraper:
             "Ref_fabricant":         ref_fab,
             "EAN":                   ean,
             "ProductUrl":            d.current_url,
-            "parentRef":             "",
+            "parentRef":             product_ref,
+            "childRefs":             product_ref,   # sera mis à jour si combinaisons trouvées
             "crossSell":             "||".join(cross_sell_refs),
         }
 
@@ -486,12 +526,25 @@ class LegallaisScraper:
                 except Exception:
                     pass
 
+                # 1re passe : collecte toutes les refs enfants pour product_child_reference
+                all_child_refs: List[str] = [product_ref] if product_ref else []
+                for combo in combo_rows:
+                    tds = combo.select_all("td", 0)
+                    if tds:
+                        ref_td = clean_text(tds[0].text)
+                        if ref_td and ref_td not in all_child_refs:
+                            all_child_refs.append(ref_td)
+                child_refs_str = "||".join(all_child_refs)
+                base_row["childRefs"] = child_refs_str
+
+                # 2e passe : extraction complète de chaque déclinaison
                 for idx, combo in enumerate(combo_rows, 1):
                     tds = combo.select_all("td", 0)
                     row = dict(base_row)
                     row["isCombination"]       = "True"
-                    row["combinationIndex"]    = idx
+                    row["combinationIndex"]    = group_index
                     row["parentRef"]           = base_row["productRef"]
+                    row["childRefs"]           = child_refs_str
                     if tds:
                         ref_td = clean_text(tds[0].text)
                         if ref_td:
@@ -511,9 +564,11 @@ class LegallaisScraper:
                     rows.append(row)
             else:
                 base_row["isCombination"] = "False"
+                base_row["combinationIndex"] = group_index
                 rows.append(base_row)
         except Exception:
             base_row["isCombination"] = "False"
+            base_row["combinationIndex"] = group_index
             rows.append(base_row)
 
         return rows

@@ -222,7 +222,7 @@ def _extract_declinaisons(page, radios):
 # DOM EXTRACTION
 # =============================
 
-def extract_product_from_dom(page):
+def extract_product_from_dom(page, group_index: int = 1):
     """
     Extrait une ou plusieurs lignes produit depuis la page Playwright courante.
 
@@ -342,18 +342,19 @@ def extract_product_from_dom(page):
         pass
 
     # ---------------- CROSS-SELL (produits similaires)
+    # HTML : <span data-testid="product-card/reference">Ref. P70JK9P</span>
     try:
         cross_refs = page.locator(Selectors.cross_sell_ref)
-        refs = set()
+        refs = []
         for i in range(cross_refs.count()):
             txt = cross_refs.nth(i).inner_text().strip()
-            m = re.search(r'Réf\.\s*(\S+)', txt)
+            m = re.search(r'R[eé]f\.?\s*(\S+)', txt)
             if m:
                 ref = m.group(1)
-                if ref and ref != data.get("product_reference_fournisseur"):
-                    refs.add(ref)
+                if ref and ref != data.get("product_reference_fournisseur") and ref not in refs:
+                    refs.append(ref)
         if refs:
-            data["product_cross_sell"] = "||".join(sorted(refs))
+            data["product_cross_sell"] = "||".join(refs)
     except:
         pass
 
@@ -379,30 +380,41 @@ def extract_product_from_dom(page):
         if radios.count() > 0:
             # Produit avec variantes — une ligne CSV par déclinaison
             data["products_is_combination"] = "True"
-            data["product_parent_reference"] = code_p_init
+            data["product_parent_reference"] = ref_prolians_init
 
             declinaisons = _extract_declinaisons(page, radios)
+
+            # Construit la liste complète de toutes les références (parent + variantes)
+            all_refs = []
+            if ref_prolians_init:
+                all_refs.append(ref_prolians_init)
+            for decli in declinaisons:
+                child_r = decli["ref_prolians"] or decli["code_p"]
+                if child_r and child_r not in all_refs:
+                    all_refs.append(child_r)
+            full_child_refs = "||".join(all_refs)
+
             for idx, decli in enumerate(declinaisons, start=1):
                 row = dict(data)
-                row["product_combination_index"]   = idx
-                row["product_combination_values"]  = decli["label"]
+                row["product_combination_index"]     = group_index
+                row["product_combination_values"]    = decli["label"]
                 row["product_reference_fournisseur"] = decli["ref_prolians"] or ref_prolians_init
                 row["product_reference_fabricant"]   = decli["ref_fab"] or ref_fab_init
-                row["product_ean"]                  = decli["ean"] or ean_init
-                row["product_eco_taxe"]             = decli["eco_tax"] or eco_tax_init
-                row["product_promotion"]            = decli["reduction"] or reduction_init
-                row["product_child_reference"]      = decli["code_p"] or code_p_init
-                row["product_price_ht"]             = decli["price"]
-                row["product_stock_status"]         = decli["stock"]
-                row["product_fournisseur_url"]      = page.url
+                row["product_ean"]                   = decli["ean"] or ean_init
+                row["product_eco_taxe"]              = decli["eco_tax"] or eco_tax_init
+                row["product_promotion"]             = decli["reduction"] or reduction_init
+                row["product_child_reference"]       = full_child_refs
+                row["product_price_ht"]              = decli["price"]
+                row["product_stock_status"]          = decli["stock"]
+                row["product_fournisseur_url"]       = page.url
                 rows.append(row)
         else:
-            # Produit simple
+            # Produit simple — parent = enfant = la même référence PROLIANS
             data["products_is_combination"]     = "False"
             data["product_reference_fabricant"] = ref_fab_init
-            data["product_child_reference"]     = code_p_init
-            data["product_parent_reference"]    = code_p_init
-            data["product_combination_index"]   = 1
+            data["product_parent_reference"]    = ref_prolians_init
+            data["product_child_reference"]     = ref_prolians_init
+            data["product_combination_index"]   = group_index
             data["product_combination_values"]  = data.get("product_designation", "Produit standard")
             data["product_price_ht"]            = price_init
             data["product_stock_status"]        = stock_init

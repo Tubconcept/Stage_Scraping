@@ -305,17 +305,32 @@ class SetinProductScraper(BaseScraper):
 
         # Champs communs à toutes les variantes (page produit)
         page_status = await self._get_product_status(page)
-        cross_sell = await self._get_cross_sell(page)
         eco_labels = await self._get_eco_labels(page)
 
         all_images = "||".join(
             dict.fromkeys(p["image"] for p in products if p.get("image"))
         )
+
+        # Toutes les références du groupe : parent || enfant1 || enfant2 || ...
+        all_group_refs = list(dict.fromkeys(p["ref"] for p in products if p.get("ref")))
+        group_refs_set = set(all_group_refs)
+        group_refs_str = "||".join(all_group_refs)
+        parent_ref = all_group_refs[0] if all_group_refs else ""
+
         for p in products:
-            p["productImages"] = all_images
+            p["productImages"]  = all_images
             p["product_status"] = page_status
-            p["product_cross_sell"] = cross_sell
             p["product_eco_label"] = eco_labels
+            p["group_refs"]     = group_refs_str
+            if not p.get("parent"):
+                p["parent"]     = parent_ref
+            # Filtre : exclure les refs du groupe lui-même du cross-sell
+            cs_raw = p.get("product_cross_sell", "")
+            if cs_raw and group_refs_set:
+                filtered = [r for r in cs_raw.split("||") if r and r not in group_refs_set]
+                p["product_cross_sell"] = "||".join(filtered)
+            elif not cs_raw:
+                p["product_cross_sell"] = ""
 
         return current_index, products
 
@@ -547,6 +562,9 @@ class SetinProductScraper(BaseScraper):
         except Exception as exc:
             log_exception(self.log, exc, f"{url} panneau détail")
 
+        # Cross-sell pour CE variant spécifique (état de la page au moment de la sélection)
+        cross_sell_row = await self._get_cross_sell(page)
+
         produit = {
             "title": title,
             "cdt": cdt,
@@ -571,6 +589,7 @@ class SetinProductScraper(BaseScraper):
             "reduc": reduc,
             "ref_decli": ref_lier,
             "stockStatus": stock_status,
+            "product_cross_sell": cross_sell_row,
         }
 
         self.log.info("Produit extrait : %s", ref)
@@ -611,14 +630,15 @@ class SetinProductScraper(BaseScraper):
         return ""
 
     async def _get_cross_sell(self, page: Page) -> str:
-        """Références des produits associés (carrousel)."""
+        """Références des produits associés — extraites depuis l'href (ex: /BL6122 → BL6122)."""
         refs: list[str] = []
         try:
             links = page.locator(Selectors.product_cross_sell)
             for i in range(await links.count()):
-                href = await links.nth(i).get_attribute("href") or ""
-                text = clean_text(await links.nth(i).inner_text())
-                token = text or href.rstrip("/").split("/")[-1]
+                href = (await links.nth(i).get_attribute("href") or "").rstrip("/")
+                token = href.split("/")[-1] if "/" in href else href
+                if not token:
+                    token = clean_text(await links.nth(i).inner_text())
                 if token and token not in refs:
                     refs.append(token)
         except Exception as exc:
@@ -797,8 +817,8 @@ class SetinProductScraper(BaseScraper):
             "product_attributes": produit.get("caractéristiques", ""),
             "products_is_combination": str(is_combo),
             "product_combination_index": str(produit.get("IndexCombination") or ""),
-            "product_parent_reference": produit.get("parent", ""),
-            "product_child_reference": produit.get("ref", "") if is_combo else produit.get("parent", produit.get("ref", "")),
+            "product_parent_reference": produit.get("parent", "") or produit.get("ref", ""),
+            "product_child_reference": produit.get("group_refs", "") or produit.get("ref", ""),
             "product_combination_values": produit.get("combinationValues", ""),
             "product_cross_sell": produit.get("product_cross_sell", ""),
         }

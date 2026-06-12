@@ -40,7 +40,8 @@ except ImportError:
 @browser(headless=False)
 def _search_and_scrape(driver: Driver, data: dict | None = None) -> None:
     """Session unique : recherche + navigation + extraction pour chaque référence."""
-    refs: list[str] = (data or {}).get("refs", [])
+    refs: list[str]   = (data or {}).get("refs", [])
+    stop_fn           = (data or {}).get("stop_fn", None)
 
     scraper = LegallaisScraper()
     scraper.set_driver(driver)
@@ -57,6 +58,9 @@ def _search_and_scrape(driver: Driver, data: dict | None = None) -> None:
     count = 0
 
     for idx, ref in enumerate(refs, 1):
+        if stop_fn and stop_fn():
+            print(" Arrêt demandé — fin de la mise à jour par références.")
+            break
         print(f" [{idx}/{total}] Référence : {ref}")
         try:
             # ── Recherche dans la barre ──────────────────────────────────────
@@ -100,7 +104,7 @@ def _search_and_scrape(driver: Driver, data: dict | None = None) -> None:
             driver.get(product_url)
 
             # ── Extraction des données ───────────────────────────────────────
-            rows = scraper.scrape_product()
+            rows = scraper.scrape_product(idx)
             if not rows:
                 print(f"   Aucune donnée extraite : {product_url}")
                 driver.get(BASE_URL)
@@ -146,6 +150,7 @@ class LegallaisByRefsScraper:
     run() est synchrone (Botasaurus) — doit être appelé dans un thread via
     _start_sync() de la GUI.
     """
+    _allow_ctypes = True  # close() ferme le driver pool avant l'injection ctypes
 
     def __init__(self, refs: list[str]) -> None:
         self._refs = refs
@@ -154,8 +159,14 @@ class LegallaisByRefsScraper:
     def request_stop(self) -> None:
         self._stop_requested = True
 
+    def close(self) -> None:
+        try:
+            _search_and_scrape.close()
+        except Exception:
+            pass
+
     def run(self) -> None:
-        _search_and_scrape({"refs": self._refs})  # type: ignore[call-arg]
+        _search_and_scrape({"refs": self._refs, "stop_fn": lambda: self._stop_requested})  # type: ignore[call-arg]
 
 
 def create_scraper(refs: list[str]) -> LegallaisByRefsScraper:

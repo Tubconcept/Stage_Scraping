@@ -65,6 +65,9 @@ DRY_RUN = True  # True = ne clique pas sur "Supprimer", juste un aperçu
 HEADLESS = False  # Mettez True pour exécution silencieuse une fois validé
 HUMAN_MODE = True  # mouvements humains pour réduire la détection
 WAIT = 6  # délai d'attente implicite (secondes)
+
+# Flag d'arrêt partagé entre la classe wrapper et la fonction Botasaurus
+_stop_flag: bool = False
 # ─── Sélecteurs DOM adresses ──────────────────────────────────────────────────
 
 SEL = {
@@ -128,7 +131,7 @@ def _navigate_to_addresses(driver: Driver) -> None:
 
 def cleanup_addresses(driver: Driver):
     """Supprime la 3ème adresse en boucle jusqu'à n'en plus avoir que 2."""
-    while True:
+    while not _stop_flag:
         # Cible toujours la 3ème carte (nth-child(3)) pour conserver les 2 premières
         try:
             card = driver.select(SEL["address_cards"]+":nth-child(3)")
@@ -211,5 +214,25 @@ if __name__ == "__main__":
     result = cleanup_legallais_addresses()
     # Botasaurus sauve automatiquement en output/cleanup_legallais_addresses.json
     print("Terminé. Consultez output/cleanup_legallais_addresses.json pour le récap.")
+
+
+# ─── Wrapper GUI ───────────────────────────────────────────────────────────────
+
+class LegallaisSupprScraper:
+    """Wrapper synchrone exposant request_stop() pour la GUI."""
+
+    def request_stop(self) -> None:
+        global _stop_flag
+        _stop_flag = True
+
+    def run(self) -> None:
+        global _stop_flag
+        _stop_flag = False
+        cleanup_legallais_addresses()
+
+
+def create_scraper() -> LegallaisSupprScraper:
+    """Factory attendue par la GUI."""
+    return LegallaisSupprScraper()
     
     

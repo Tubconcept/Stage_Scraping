@@ -258,9 +258,9 @@ def get_Info(page, cmd):
                 if title:
                     prdt_data[ref_produit]["title"] = title
 
-        # Reformater : "title_pdt : X || ref_pdt : Y || qty : Z"
+        # Reformater : "ref:title:qty"
         final_list = [
-            f"title_pdt : {data['title']} || ref_pdt : {ref} || qty : {data['qty']}"
+            f"{ref}:{data['title']}:{data['qty']}"
             for ref, data in prdt_data.items()
         ]
         print(final_list)
@@ -280,5 +280,5 @@ def get_Info(page, cmd):
         "ref_cmd":   ref_cmd,
         "date_cmd":  date_cmd,
         "statut":    statut,
-        "prdt_data": " || ".join(final_list) if final_list else "",
+        "prdt_data": "||".join(final_list) if final_list else "",
     }

@@ -230,7 +230,7 @@ class SetinTrackingScraper(BaseScraper):
                 articles = new_page.locator(Selectors.order_product_articles)
                 title = (
                     await articles.locator(Selectors.order_product_label).first.inner_text()
-                ).strip().replace(":", "").replace(",", ".").replace(";", ".")
+                ).strip().replace(":", "-").replace(",", ".").replace(";", ".")
                 ref = (
                     await articles.locator(Selectors.order_product_text).first.inner_text()
                 ).strip()
@@ -242,18 +242,25 @@ class SetinTrackingScraper(BaseScraper):
             except Exception:
                 pass
 
-            # weight_exp — sélecteur à vérifier dans selectors/setin.py (detail_weight)
+            # weight_exp — sélecteur CSS d'abord, puis fallback regex sur le texte de la page
             weight_exp: str | None = None
             try:
                 weight_loc = new_page.locator(Selectors.detail_weight)
-                count = await weight_loc.count()
-                if count > 0:
+                if await weight_loc.count() > 0:
                     weight_exp = (await weight_loc.first.inner_text()).strip() or None
-                    self.log.debug("Poids expédition trouvé : %s", weight_exp)
-                else:
-                    self.log.debug("Sélecteur poids introuvable (chercher : %s) — URL : %s", Selectors.detail_weight, new_page.url)
+                    self.log.debug("Poids expédition trouvé (CSS) : %s", weight_exp)
             except Exception as e:
-                self.log.debug("Erreur extraction poids : %s", e)
+                self.log.debug("Erreur sélecteur poids CSS : %s", e)
+
+            if not weight_exp:
+                try:
+                    body_text = await new_page.locator("body").inner_text()
+                    m_w = re.search(r"(\d+[.,]\d+)\s*kg", body_text, re.IGNORECASE)
+                    if m_w:
+                        weight_exp = m_w.group(0).strip()
+                        self.log.debug("Poids expédition trouvé (regex) : %s", weight_exp)
+                except Exception as e:
+                    self.log.debug("Erreur fallback poids regex : %s", e)
 
             return data_pdt, weight_exp
 

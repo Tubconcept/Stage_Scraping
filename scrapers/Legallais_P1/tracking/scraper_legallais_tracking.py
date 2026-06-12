@@ -268,7 +268,7 @@ def get_Info(driver: Driver, cmd):
     print(date_cmd)
     try:
         titrePrdt = nettoyer_texte(
-            driver.select(PRODUCT_LINK, 0).text.replace(',', ".").replace(";", ".").replace(":", "")
+            driver.select(PRODUCT_LINK, 0).text.replace(',', ".").replace(";", ".").replace(":", "-")
         )
     except Exception as e:
         log_exception(today, e, "Erreur de Titre " + ref_cmd)
@@ -277,7 +277,7 @@ def get_Info(driver: Driver, cmd):
         prdt_qty  = driver.select(PRODUCT_QUANTITY, 0).text
         ref_match = re.search(r"Réf\s*:\s*(\d+)", ref_text)
         ref_produit = ref_match.group(1) if ref_match else None
-        prdt_data   = f"title_pdt : {titrePrdt} || ref_pdt : {ref_produit or ''} || qty : {prdt_qty.strip()}"
+        prdt_data   = f"{ref_produit or ''}:{titrePrdt}:{prdt_qty.strip()}"
     except Exception as e:
         log_exception(today, e, "Erreur de Produits " + ref_cmd)
         prdt_data = ""

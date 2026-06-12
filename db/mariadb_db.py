@@ -286,15 +286,27 @@ def get_scraped_product_urls(_conn, site: str) -> set[str]:
 
 # ─── Export CSV ───────────────────────────────────────────────────────────────
 
-def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path) -> int:
-    """Exporte toute la table vers un CSV (séparateur ;). Compat sqlite_db."""
+def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
+                        since=None) -> int:
+    """Exporte la table vers un CSV (séparateur ;). Compat sqlite_db.
+
+    since : date optionnelle (datetime.date). Si fournie, filtre les lignes dont
+            date_cmd (stockée en DD/MM/YYYY) est >= since.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ", ".join(f"`{h}`" for h in headers)
 
     conn_db = _get_conn()
     try:
         with conn_db.cursor() as cur:
-            cur.execute(f"SELECT {cols} FROM `{table}`")
+            if since is not None:
+                cur.execute(
+                    f"SELECT {cols} FROM `{table}`"
+                    " WHERE STR_TO_DATE(`date_cmd`, '%%d/%%m/%%Y') >= %s",
+                    (since,),
+                )
+            else:
+                cur.execute(f"SELECT {cols} FROM `{table}`")
             rows = cur.fetchall()
     except pymysql.Error as e:
         _log.error("export_table_to_csv(%s) échec : %s", table, e)

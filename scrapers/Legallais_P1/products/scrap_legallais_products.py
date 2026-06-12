@@ -46,6 +46,9 @@ except ImportError:
 # Borne haute du décorateur @browser
 _MAX_PARALLEL = 8
 
+# Flag d'arrêt partagé entre la classe wrapper et la fonction Botasaurus
+_stop_flag: bool = False
+
 
 # ─── Mapping interne → CSV_HEADERS standardisés ───────────────────────────────
 
@@ -76,8 +79,8 @@ def _map_to_csv_headers(row: dict, cat1: str, cat2: str, cat3: str) -> dict:
         "product_attributes":            row.get("productAttributes", ""),
         "products_is_combination":       str(row.get("isCombination", "False")),
         "product_combination_index":     str(row.get("combinationIndex", "") or ""),
-        "product_parent_reference":      row.get("parentRef", ""),
-        "product_child_reference":       row.get("productRef", ""),
+        "product_parent_reference":      row.get("parentRef", "") or row.get("productRef", ""),
+        "product_child_reference":       row.get("childRefs", "") or row.get("productRef", ""),
         "product_combination_values":    row.get("productDecliName&Value", ""),
         "product_cross_sell":            row.get("crossSell", ""),
     }
@@ -253,7 +256,7 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
 
             cat1, cat2, cat3 = item["cat1"], item["cat2"], item["cat3"]
 
-            rows = scraper.scrape_product()
+            rows = scraper.scrape_product(ok + 1)
             if rows:
                 for row in rows:
                     if db_conn:
@@ -317,6 +320,8 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
             logger.info(f"Reprise — {len(visited_urls)} URL(s) déjà scrappée(s) ignorées")
 
         for idx, cat_url in enumerate(categories, 1):
+            if _stop_flag:
+                break
             try:
                 full_url = cat_url if cat_url.startswith("http") else BASE_URL + cat_url
                 driver.get(full_url)
@@ -340,10 +345,14 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                 )
 
                 for page_num in range(1, total_pages + 1):
+                    if _stop_flag:
+                        break
                     if page_num > 1:
                         scraper.go_to_page(page_num)
 
                     for href in scraper.get_product_links():
+                        if _stop_flag:
+                            break
                         try:
                             full_href = href if href.startswith("http") else BASE_URL + href
                             if full_href in visited_urls:
@@ -352,7 +361,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
 
                             logger.info(f"  → Produit {ok + err + 1} : {full_href}")
                             driver.get(full_href)
-                            rows = scraper.scrape_product()
+                            rows = scraper.scrape_product(ok + 1)
 
                             if rows:
                                 for row in rows:
@@ -394,10 +403,12 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
             db_conn.close()
 
     else:  # mode search
+        group_index = 0
         for item in products:
             try:
                 driver.get(item["url"])
-                rows = scraper.scrape_product()
+                group_index += 1
+                rows = scraper.scrape_product(group_index)
                 if rows:
                     c1, c2, c3 = item.get("cat1", ""), item.get("cat2", ""), item.get("cat3", "")
                     for row in rows:
@@ -488,3 +499,30 @@ def run_interactive():
 
 if __name__ == "__main__":
     main()
+
+
+# ─── Wrapper GUI ───────────────────────────────────────────────────────────────
+
+class LegallaisProductsScraper:
+    """Wrapper synchrone exposant request_stop() pour la GUI (même pattern que LegallaisTrackingScraper)."""
+
+    def __init__(self, category_filter=None):
+        self._category_filter = category_filter
+
+    def request_stop(self) -> None:
+        global _stop_flag
+        _stop_flag = True
+
+    def run(self) -> None:
+        global _stop_flag
+        _stop_flag = False
+        _scrape_direct({  # type: ignore[call-arg]
+            "products": [],
+            "mode": "browse",
+            "category_filter": self._category_filter or None,
+        })
+
+
+def create_scraper(category_filter=None) -> LegallaisProductsScraper:
+    """Factory attendue par la GUI."""
+    return LegallaisProductsScraper(category_filter=category_filter)

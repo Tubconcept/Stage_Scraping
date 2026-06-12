@@ -5,7 +5,7 @@ Architecture :
   - L'utilisateur choisit un site (Setin / Legallais / Prolians) puis une action.
   - Chaque action affiche un panneau avec champs optionnels (catégorie, dates).
   - Le scraping s'exécute dans un thread séparé pour ne pas bloquer l'UI.
-  - Les données sont persistées en SQLite ; le bouton « Télécharger CSV » exporte la table.
+  - Les données sont persistées en MariaDB ; le bouton « Télécharger CSV » exporte la table.
 
 Modes d'exécution par site :
   - Setin     : scrapers async Playwright (BaseScraper) via _start_async
@@ -67,9 +67,25 @@ def _run_legallais_products_sync(category_filter: str | None) -> str:
     return str(path) if path.exists() else ""
 
 
+# ─── Jeton d'arrêt pour les fonctions sync sans BaseScraper ──────────────────
+
+class _SyncStopToken:
+    """Jeton d'arrêt passé aux wrappers sync qui n'ont pas de classe BaseScraper."""
+    _allow_ctypes = True  # Playwright sync : ctypes sûr, ferme via context manager
+    def __init__(self):
+        self._stop = False
+    def request_stop(self) -> None:
+        self._stop = True
+    def __bool__(self) -> bool:
+        return self._stop
+    def __call__(self) -> bool:
+        return self._stop
+
+
 # ─── Wrapper Legallais orders (Playwright sync, évite input()) ────────────────
 
-def _run_legallais_orders_sync(date_from: datetime, date_to: datetime) -> str:
+def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
+                                should_stop=None) -> str:
     from dotenv import load_dotenv
     from playwright.sync_api import sync_playwright
     from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_session_state
@@ -141,6 +157,8 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime) -> str:
             log_exception(today_str, e, "pagination date début")
 
         for cmd in Url_cmd:
+            if should_stop and should_stop():
+                break
             try:
                 page.goto(BASE_URL + cmd["link"])
                 page.wait_for_load_state("domcontentloaded")
@@ -166,7 +184,8 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime) -> str:
 
 # ─── Wrapper Prolians orders (évite main() qui utilise input()) ───────────────
 
-def _run_prolians_orders_sync(date_from: datetime, date_to: datetime) -> str:
+def _run_prolians_orders_sync(date_from: datetime, date_to: datetime,
+                               should_stop=None) -> str:
     from dotenv import load_dotenv
     from playwright.sync_api import sync_playwright
     from auth.prolians.cookie_manager import ensure_logged_in
@@ -198,6 +217,8 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime) -> str:
         orders = collect_orders(page, date_from, date_to)
 
         for order in orders:
+            if should_stop and should_stop():
+                break
             try:
                 data = get_info(page, order)
                 if data:
@@ -390,6 +411,18 @@ class ScraperApp(tk.Tk):
             ).pack(side="left", padx=2)
             frm.refs_file_path: Path | None = None
 
+        elif key == "suivi":
+            row = tk.Frame(frm.input_area, bg=BG)
+            row.pack(pady=4)
+            frm.seven_days_var = tk.BooleanVar(value=False)
+            tk.Checkbutton(
+                row,
+                text="7 derniers jours seulement",
+                variable=frm.seven_days_var,
+                font=("Helvetica", 10), bg=BG, fg=BLACK,
+                activebackground=BG, selectcolor=WHITE,
+            ).pack(side="left")
+
         elif key == "commandes":
             for attr, label in [("entry_from", "Date début  (JJ/MM/AAAA) :"),
                                   ("entry_to",   "Date fin     (JJ/MM/AAAA) :")]:
@@ -520,11 +553,24 @@ class ScraperApp(tk.Tk):
 
     def _stop(self, key: str):
         self._running = False
+        # 1. Arrêt gracieux via flag (async BaseScraper + wrappers sync avec request_stop)
         if self._scraper and hasattr(self._scraper, "request_stop"):
             self._scraper.request_stop()
+        # 2. Annulation de la tâche asyncio (Setin et Prolians async)
         if self._async_loop and self._async_task:
             self._async_loop.call_soon_threadsafe(self._async_task.cancel)
-        if self._worker_thread and self._worker_thread.is_alive():
+        # 3. Fermeture immédiate du navigateur Botasaurus si disponible
+        if self._scraper and hasattr(self._scraper, "close"):
+            try:
+                self._scraper.close()
+            except Exception:
+                pass
+        # 4. Injection ctypes : toujours pour Playwright (context manager ferme le navigateur),
+        #    et pour Botasaurus uniquement si _allow_ctypes est explicitement positionné
+        #    (après un close() du driver pool).
+        _has_rqs = self._scraper and hasattr(self._scraper, "request_stop")
+        _allow = (not _has_rqs) or getattr(self._scraper, "_allow_ctypes", False)
+        if not self._async_loop and self._worker_thread and self._worker_thread.is_alive() and _allow:
             try:
                 import ctypes
                 ctypes.pythonapi.PyThreadState_SetAsyncExc(
@@ -533,7 +579,7 @@ class ScraperApp(tk.Tk):
                 )
             except Exception:
                 pass
-        self._set_done(key, "Arrêt demandé...")
+        self._set_done(key, "Arrêt en cours...")
 
     def _download(self, key: str):
         if key in ("suppr", "refs"):
@@ -559,29 +605,39 @@ class ScraperApp(tk.Tk):
         from db.mariadb_db import SITE_PREFIX, export_table_to_csv
         table = f"{SITE_PREFIX[site_key]}_{table_suffix}"
 
-        # Read all rows from MariaDB and write to a temporary CSV
+        # Option 7 jours — uniquement pour "suivi"
+        since = None
+        if key == "suivi":
+            panel = self._panels["suivi"]
+            if getattr(panel, "seven_days_var", None) and panel.seven_days_var.get():
+                from datetime import date, timedelta
+                since = date.today() - timedelta(days=7)
+
+        # Read rows from MariaDB and write to a temporary CSV
         try:
             with tempfile.NamedTemporaryFile(
                 suffix=".csv", dir=str(CSV_DIR), delete=False
             ) as _tmp:
                 tmp_path = Path(_tmp.name)
             CSV_DIR.mkdir(parents=True, exist_ok=True)
-            n_rows = export_table_to_csv(None, table, headers, tmp_path)
+            n_rows = export_table_to_csv(None, table, headers, tmp_path, since=since)
         except Exception as exc:
             messagebox.showerror("Erreur base de données",
                                  f"Impossible de lire {table} :\n{exc}")
             return
 
         if n_rows == 0:
+            period = "ces 7 derniers jours" if since else "dans cette table"
             messagebox.showinfo("Base vide",
-                                f"Aucune donnée dans {table}.\n"
+                                f"Aucune donnée {period} ({table}).\n"
                                 "Lancez d'abord le scraper pour peupler la base.")
             if tmp_path.exists():
                 tmp_path.unlink()
             return
 
         run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        default_name = f"export_{table}_{run_ts}.csv"
+        suffix = "_7j" if since else ""
+        default_name = f"export_{table}{suffix}_{run_ts}.csv"
         dest = filedialog.asksaveasfilename(
             initialfile=default_name,
             defaultextension=".csv",
@@ -695,7 +751,7 @@ class ScraperApp(tk.Tk):
         scraper = mod.create_scraper(refs=valid)
 
         if site_key in self._SYNC_REFS_SITES:
-            self._start_sync("refs", scraper.run, lambda: "")
+            self._start_sync("refs", scraper.run, lambda: "", scraper=scraper)
         else:
             self._start_async("refs", scraper.run(), scraper, lambda: "")
 
@@ -761,9 +817,11 @@ class ScraperApp(tk.Tk):
 
         elif key == "commandes":
             df, dt = self._read_dates(panel)
+            token = _SyncStopToken()
             self._start_sync(key,
-                             lambda: _run_prolians_orders_sync(df, dt),
-                             lambda: "")
+                             lambda: _run_prolians_orders_sync(df, dt, token),
+                             lambda: "",
+                             scraper=token)
 
         elif key == "suivi":
             mod     = import_module(cfg["imports"]["suivi"])
@@ -772,7 +830,8 @@ class ScraperApp(tk.Tk):
 
         elif key == "suppr":
             mod = import_module(cfg["imports"]["suppr"])
-            self._start_sync(key, mod.main, lambda: "")
+            scraper = mod.create_scraper()
+            self._start_sync(key, scraper.run, lambda: "", scraper=scraper)
 
     # ─── Lanceurs Legallais ───────────────────────────────────────────────────
 
@@ -791,31 +850,34 @@ class ScraperApp(tk.Tk):
         if key == "produits":
             cat = panel.cat_var.get() if cfg.get("has_categories") else ""
             category_filter = cat if cat else None
+            mod = import_module(cfg["imports"]["produits"])
+            scraper = mod.create_scraper(category_filter=category_filter)
             self._start_sync(
                 key,
-                lambda: _run_legallais_products_sync(category_filter),
+                scraper.run,
                 lambda: self._latest_csv("scrap_p1_products_*.csv"),
+                scraper=scraper,
             )
 
         elif key == "commandes":
             df, dt = self._read_dates(panel)
+            token = _SyncStopToken()
             self._start_sync(
                 key,
-                lambda: _run_legallais_orders_sync(df, dt),
+                lambda: _run_legallais_orders_sync(df, dt, token),
                 lambda: "",
+                scraper=token,
             )
 
         elif key == "suivi":
-            mod = import_module(cfg["imports"]["suivi"])
-            self._start_sync(
-                key,
-                mod.main,
-                lambda: "",
-            )
+            mod     = import_module(cfg["imports"]["suivi"])
+            scraper = mod.create_scraper()
+            self._start_sync(key, scraper.run, lambda: "", scraper=scraper)
 
         elif key == "suppr":
             mod = import_module(cfg["imports"]["suppr"])
-            self._start_sync(key, mod.cleanup_legallais_addresses, lambda: "")
+            scraper = mod.create_scraper()
+            self._start_sync(key, scraper.run, lambda: "", scraper=scraper)
 
     # ─── Helpers threading ────────────────────────────────────────────────────
 
@@ -850,25 +912,37 @@ class ScraperApp(tk.Tk):
                 task = loop.create_task(coro)
                 self._async_task = task
                 loop.run_until_complete(task)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, KeyboardInterrupt):
                 pass
             except Exception:
                 pass
             finally:
                 self._async_loop = None
                 self._async_task = None
-                loop.close()
-                was_running = self._running
-                self._running = False
-                path = get_path()
-                self.after(0, lambda: self._on_done(key, path, was_running))
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+                try:
+                    was_running = self._running
+                    self._running = False
+                    try:
+                        path = get_path()
+                    except Exception:
+                        path = ""
+                    self.after(0, lambda: self._on_done(key, path, was_running))
+                except BaseException:
+                    try:
+                        self.after(0, lambda: self._on_done(key, "", False))
+                    except Exception:
+                        pass
 
         self._worker_thread = threading.Thread(target=_worker, daemon=True)
         self._worker_thread.start()
 
-    def _start_sync(self, key: str, func, get_path):
+    def _start_sync(self, key: str, func, get_path, scraper=None):
         """Lance une fonction synchrone bloquante dans un thread (Playwright sync, Botasaurus)."""
-        self._scraper = None
+        self._scraper = scraper
         self._running = True
         self._set_running(key)
 
@@ -876,23 +950,29 @@ class ScraperApp(tk.Tk):
             try:
                 func()
             except BaseException:
-                # KeyboardInterrupt injecté par _stop() ou erreur scraper — ne pas crasher l'UI
                 pass
             finally:
-                was_running = self._running
-                self._running = False
                 try:
-                    path = get_path()
-                except Exception:
-                    path = ""
-                self.after(0, lambda: self._on_done(key, path, was_running))
+                    was_running = self._running
+                    self._running = False
+                    try:
+                        path = get_path()
+                    except Exception:
+                        path = ""
+                    self.after(0, lambda: self._on_done(key, path, was_running))
+                except BaseException:
+                    # Cas extrême : KeyboardInterrupt injecté une 2e fois dans le finally
+                    try:
+                        self.after(0, lambda: self._on_done(key, "", False))
+                    except Exception:
+                        pass
 
         self._worker_thread = threading.Thread(target=_worker, daemon=True)
         self._worker_thread.start()
 
-    def _on_done(self, key: str, csv_path: str, was_running: bool):
+    def _on_done(self, key: str, csv_path: str, _was_running: bool):
         self._running = False
         self._scraper = None
-        if was_running:
-            self._set_done(key, "Terminé ✔")
+        self._worker_thread = None  # libère le verrou pour relancer un autre scrap
+        self._set_done(key, "Terminé ✔")
         self._set_csv_label(key, csv_path)

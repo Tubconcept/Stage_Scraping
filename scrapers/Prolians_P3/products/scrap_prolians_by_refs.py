@@ -147,7 +147,7 @@ class ProlianByRefsScraper:
                         print(f"   Fiche non chargée pour : {ref}")
                         continue
 
-                    rows = extract_product_from_dom(page)
+                    rows = extract_product_from_dom(page, count + 1)
                     if not rows:
                         print(f"   Aucune donnée extraite pour : {ref}")
                         continue

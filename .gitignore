@@ -221,6 +221,7 @@ __marimo__/
 .streamlit/secrets.toml
 # Profils Playwright (cookies, sessions, storage)
 playwright_profiles/
+data/imports/
 
 # Bases SQLite
 *.db

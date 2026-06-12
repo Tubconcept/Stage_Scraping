@@ -44,8 +44,11 @@ except ImportError:
 
 load_dotenv()
 
-LEGALLAIS_EMAIL   = os.getenv("User_P1")
+LEGALLAIS_EMAIL    = os.getenv("User_P1")
 LEGALLAIS_PASSWORD = os.getenv("Password_P1")
+
+# Flag d'arrêt partagé entre la classe wrapper et la fonction Botasaurus
+_stop_flag: bool = False
 
 # Flags de configuration (conservés pour compatibilité ; non utilisés dans main actuel)
 DRY_RUN    = True
@@ -102,6 +105,8 @@ def main(driver: Driver, _data=None):
 
     # Paginer tant que la dernière date de la page n'est pas antérieure à la semaine
     while check_time != True:
+        if _stop_flag:
+            break
         try:
             next = driver.select(NEXT_PAGE_BUTTON, 0)
             next.scroll_into_view()
@@ -116,6 +121,8 @@ def main(driver: Driver, _data=None):
     print(f"{len(Url_cmd)} de commande")
 
     for cmd in Url_cmd:
+        if _stop_flag:
+            break
         try:
             driver.get(BASE_URL + cmd['link'], timeout=10)
             driver.wait_for_page_to_be(BASE_URL + cmd['link'], 3)
@@ -129,3 +136,23 @@ def main(driver: Driver, _data=None):
 
 if "__main__" == __name__:
     main()
+
+
+# ─── Wrapper GUI ───────────────────────────────────────────────────────────────
+
+class LegallaisTrackingScraper:
+    """Wrapper synchrone exposant request_stop() pour la GUI."""
+
+    def request_stop(self) -> None:
+        global _stop_flag
+        _stop_flag = True
+
+    def run(self) -> None:
+        global _stop_flag
+        _stop_flag = False
+        main()
+
+
+def create_scraper() -> LegallaisTrackingScraper:
+    """Factory attendue par la GUI."""
+    return LegallaisTrackingScraper()

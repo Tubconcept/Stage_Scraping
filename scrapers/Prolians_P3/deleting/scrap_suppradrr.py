@@ -106,3 +106,26 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ─── Wrapper GUI ───────────────────────────────────────────────────────────────
+
+_stop_flag: bool = False
+
+
+class ProlianSupprScraper:
+    """Wrapper exposant request_stop() pour la GUI."""
+
+    def request_stop(self) -> None:
+        global _stop_flag
+        _stop_flag = True
+
+    def run(self) -> None:
+        global _stop_flag
+        _stop_flag = False
+        main()
+
+
+def create_scraper() -> ProlianSupprScraper:
+    """Factory attendue par la GUI."""
+    return ProlianSupprScraper()

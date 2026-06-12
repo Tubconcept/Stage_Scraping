@@ -160,7 +160,7 @@ def main():
                         sys.exit(1)
                     page.goto(url, wait_until="domcontentloaded", timeout=10000)
 
-                rows = extract_product_from_dom(page)
+                rows = extract_product_from_dom(page, count_produit + 1)
                 if not rows:
                     print("Produit ignoré (data=None)")
                     with open(crash_file, "a", encoding="utf-8") as cf:
@@ -283,7 +283,7 @@ class ProlianProductScraper:
                     if not ensure_logged_in(page, context, USERNAME, PASSWORD):
                         break
                     page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                rows = extract_product_from_dom(page)
+                rows = extract_product_from_dom(page, count + 1)
                 if not rows:
                     with open(crash_file, "a", encoding="utf-8") as cf:
                         cf.write(url + "\n")

@@ -41,6 +41,10 @@ CARRIER_MAP = {
 # Noms transporteurs connus à chercher dans le texte de la page
 KNOWN_CARRIERS = list(CARRIER_MAP.values()) + ["DB SCHENKER", "SCHENKER", "COLIS PRIVE", "RELAIS COLIS"]
 
+# URL de suivi Kuehne+Nagel — 516394767 est l'identifiant expéditeur (fixe),
+# seul le paramètre ?query= reçoit le numéro de colis.
+KUEHNE_TRACKING_URL = "https://mykn.kuehne-nagel.com/public-tracking/shipments?query={n}"
+
 
 # =============================
 # LOG
@@ -192,6 +196,15 @@ def _carrier_from_url(url: str) -> str:
 def _carrier_from_text(text: str) -> str:
     """Cherche un nom de transporteur connu dans un texte quelconque."""
     text_upper = text.upper()
+    # Kuehne+Nagel : variantes avec esperluette, accent, faute de frappe
+    for variant in (
+        "KUEHNE & NAGEL", "KUEHNE &AMP; NAGEL", "KUEHNE&NAGEL",
+        "KÜHNE & NAGEL", "KÜHNE&NAGEL",
+        "KUEHNE NAGEL", "KHUENE NAGEL",
+        "KUEHNE", "KÜHNE", "KHUENE",
+    ):
+        if variant in text_upper:
+            return "KUEHNE"
     for name in KNOWN_CARRIERS:
         if name in text_upper:
             return name
@@ -214,15 +227,16 @@ def _tracking_number_from_title(title_text: str) -> str:
 def extract_colis_from_page(page) -> tuple:
     """
     Extrait (carrier, weight, tracking_link, tracking_number) depuis la page courante.
-    Priorité :
-      carrier       → URL du lien transporteur → texte connu dans la page
-      tracking_link → premier lien vers un domaine transporteur connu
-      tracking_exp  → query param de l'URL → texte 'Bon de transport'
-      weight        → regex kg dans le bloc colis puis partout
+
+    Stratégie en cascade :
+      1. Bloc colis (div.colis ou div.blocks) → poids + numéro 'Bon de transport'
+      2. Liens <a href> → transporteur via domaine connu + numéro via query param
+      3. Corps entier de la page → transporteur par texte, poids, numéro bon transport
+      4. KUEHNE : construit l'URL mykn si le transporteur est détecté
     """
     carrier = weight = tracking_link = tracking_number = ""
 
-    # ── Récupère le texte brut du bloc colis (pour poids + numéro 'Bon de transport') ──
+    # ── 1. Bloc colis : poids + numéro de bon de transport ───────────────────
     block_text = ""
     colis_loc = page.locator("div.colis div.block")
     if colis_loc.count() == 0:
@@ -233,18 +247,20 @@ def extract_colis_from_page(page) -> tuple:
         except Exception:
             pass
 
-        # Poids dans le bloc
         m_w = re.search(r"(\d+[.,]\d+\s*kg)", block_text, re.IGNORECASE)
         if m_w:
             weight = m_w.group(1).replace(" ", "")
 
-        # Numéro via 'Bon de transport' dans le titre du bloc
         title_loc = colis_loc.first.locator("div.title")
         if title_loc.count() > 0:
-            title_text = title_loc.first.inner_text().strip()
-            tracking_number = _tracking_number_from_title(title_text)
+            try:
+                tracking_number = _tracking_number_from_title(
+                    title_loc.first.inner_text().strip()
+                )
+            except Exception:
+                pass
 
-    # ── Cherche le lien transporteur (domaine connu) n'importe où sur la page ──
+    # ── 2. Liens <a href> : transporteur par domaine + numéro via query param ─
     all_links = page.locator("a[href]").all()
     for lnk in all_links:
         try:
@@ -254,28 +270,40 @@ def extract_colis_from_page(page) -> tuple:
             detected = _carrier_from_url(href)
             if detected:
                 tracking_link = href
-                carrier       = detected
-                # Numéro depuis l'URL (priorité sur 'Bon de transport' si présent)
-                num_from_url  = _extract_tracking_number(href)
+                carrier = detected
+                num_from_url = _extract_tracking_number(href)
                 if num_from_url:
                     tracking_number = num_from_url
                 break
         except Exception:
             continue
 
-    # ── Si pas de lien → cherche le nom transporteur dans le texte du bloc ──
-    if not carrier and block_text:
-        carrier = _carrier_from_text(block_text)
-
-    # ── Poids partout sur la page si toujours pas trouvé ──────────────
-    if not weight:
+    # ── 3. Corps entier de la page (fallback) ────────────────────────────────
+    # Le nom du transporteur ("Transporteur KUEHNE & NAGEL") et le bon de
+    # transport ("Bon de transport : C3909483937") se trouvent souvent dans
+    # l'en-tête d'expédition, en dehors du bloc colis.
+    body_text = ""
+    if not carrier or not tracking_number or not weight:
         try:
             body_text = page.locator("body").inner_text()
+        except Exception:
+            pass
+
+    if body_text:
+        if not carrier:
+            carrier = _carrier_from_text(body_text)
+
+        if not tracking_number:
+            tracking_number = _tracking_number_from_title(body_text)
+
+        if not weight:
             m_w = re.search(r"(\d+[.,]\d+\s*kg)", body_text, re.IGNORECASE)
             if m_w:
                 weight = m_w.group(1).replace(" ", "")
-        except Exception:
-            pass
+
+    # ── 4. KUEHNE : construire l'URL du portail mykn ─────────────────────────
+    if carrier == "KUEHNE" and tracking_number:
+        tracking_link = KUEHNE_TRACKING_URL.format(n=tracking_number)
 
     return carrier, weight, tracking_link, tracking_number
 
@@ -297,10 +325,16 @@ def get_order_detail(page, order: dict) -> dict | None:
     detail_url = f"{BASE_URL}/customer/account/history/orders/web/{webref}"
     try:
         page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
     except Exception as e:
         log_exception(e, f"Navigation détail {webref}")
         return None
+
+    # Attendre que React ait rendu les lignes produits (peut prendre quelques secondes)
+    try:
+        page.wait_for_selector(Selectors.product_name, timeout=8000)
+    except Exception:
+        pass  # certaines commandes n'ont pas de lignes produits visibles
 
     ref_cmd = ""
     try:
@@ -313,16 +347,43 @@ def get_order_detail(page, order: dict) -> dict | None:
     prdt_data = []
     try:
         names_locs = page.locator(Selectors.product_name).all()
-        refs_locs  = page.locator(f"xpath={Selectors.product_ref_xpath}").all()
-        qtys_locs  = page.locator(f"xpath={Selectors.prodcut_qty_xpath}").all()
+
+        # XPath original → fallback sur tout élément si aucun <span>/<p> ne correspond
+        refs_locs = page.locator(f"xpath={Selectors.product_ref_xpath}").all()
+        if not refs_locs:
+            refs_locs = page.locator(
+                "xpath=//*[contains(., 'Réf. PROLIANS') and not(.//*[contains(., 'Réf. PROLIANS')])]"
+            ).all()
+
+        # Quantité : badge CSS p.bg-brand-2-50 → XPath → fallback large
+        qtys_locs = page.locator(Selectors.product_qty_badge).all()
+        if not qtys_locs:
+            qtys_locs = page.locator(f"xpath={Selectors.prodcut_qty_xpath}").all()
+        if not qtys_locs:
+            qtys_locs = page.locator(
+                "xpath=//*[contains(., 'Qt :') and not(.//*[contains(., 'Qt :')])]"
+            ).all()
+
         for i in range(len(names_locs)):
             try:
-                name    = clean_text(names_locs[i].inner_text(timeout=3000)) if i < len(names_locs) else ""
-                ref_txt = refs_locs[i].inner_text(timeout=3000).strip()  if i < len(refs_locs)  else ""
-                qty_txt = qtys_locs[i].inner_text(timeout=3000).strip()  if i < len(qtys_locs)  else ""
-                m_ref = re.search(r"Réf\. PROLIANS\s*[: ]\s*(\S+)", ref_txt)
-                m_qty = re.search(r"Qt\s*:\s*(\d+)", qty_txt)
-                prdt_data.append(f"{m_ref.group(1) if m_ref else ''}:{name}:{m_qty.group(1) if m_qty else ''}:")
+                name = clean_text(names_locs[i].inner_text(timeout=3000)) if i < len(names_locs) else ""
+                name = name.replace(":", "-")
+
+                ref = ""
+                if i < len(refs_locs):
+                    ref_txt = refs_locs[i].inner_text(timeout=3000).strip()
+                    m_ref = re.search(r"Réf\.?\s+PROLIANS\s*[:\s]\s*(\S+)", ref_txt, re.IGNORECASE)
+                    if m_ref:
+                        ref = m_ref.group(1)
+
+                qty = ""
+                if i < len(qtys_locs):
+                    qty_txt = qtys_locs[i].inner_text(timeout=3000).strip()
+                    m_qty = re.search(r"Qt\s*:\s*(\d+)", qty_txt, re.IGNORECASE)
+                    if m_qty:
+                        qty = m_qty.group(1)
+
+                prdt_data.append(f"{ref}:{name}:{qty}")
             except Exception as e:
                 log_exception(e, f"Produit {i} de {webref}")
     except Exception as e:
@@ -356,10 +417,8 @@ def get_order_detail(page, order: dict) -> dict | None:
         except Exception as e:
             log_exception(e, f"Page suivi {webref}")
     else:
-        # Pas de lien suivi : retour sur la fiche détail pour bloc colis éventuel
+        # Pas de lien suivi : cherche un bloc colis sur la fiche détail (déjà chargée)
         try:
-            page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_timeout(1000)
             carrier, weight, tracking_link, tracking_number = extract_colis_from_page(page)
         except Exception:
             pass
@@ -375,7 +434,7 @@ def get_order_detail(page, order: dict) -> dict | None:
         "ref_cmd":         ref_cmd,
         "date_cmd":        date_iso,
         "statut_cmd":      order.get("status", ""),
-        "data_pdt":        ",".join(prdt_data),
+        "data_pdt":        "||".join(prdt_data),
         "date_reliquat":   "",
         "weight":          weight,
         "carrier":         carrier,

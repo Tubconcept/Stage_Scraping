@@ -81,6 +81,7 @@ class Selectors:
     # Fallbacks CSS si les XPath échouent
     product_ref            = "span[class*='reference']"
     product_qty            = "p"
+    product_qty_badge      = "p.bg-brand-2-50"   # badge bleu "Qt : N" sur la fiche commande
 
     # ══════════════════════════════════════════════════════════════════════════
     # RECHERCHE PAR RÉFÉRENCE
