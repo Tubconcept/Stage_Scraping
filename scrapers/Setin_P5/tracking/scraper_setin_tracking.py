@@ -41,13 +41,14 @@ load_dotenv()
 # ─── Détection de transporteurs depuis l'URL de suivi ─────────────────────────
 
 _CARRIERS: list[dict] = [
-    {"name": "TNT",         "domain": "tnt.fr",         "pattern": r"bonTransport=(\d+)"},
-    {"name": "Colissimo",   "domain": "laposte.fr",     "pattern": r"code=(\d+)"},
-    {"name": "Chronopost",  "domain": "chronopost.fr",  "pattern": r"skybillNumber=([A-Z0-9]+)"},
-    {"name": "DB Schenker", "domain": "dbschenker.com", "pattern": r"refNumber=([A-Z0-9]+)"},
-    {"name": "DPD",         "domain": "dpd.fr",         "pattern": r"parcelNumber=([A-Z0-9]+)"},
-    {"name": "UPS",         "domain": "ups.com",        "pattern": r"tracknum=([A-Z0-9]+)"},
-    {"name": "FedEx",       "domain": "fedex.com",      "pattern": r"tracknumbers=([A-Z0-9]+)"},
+    {"name": "TNT",         "domain": "tnt.fr",         "patterns": [r"bonTransport=(\d+)"]},
+    {"name": "Colissimo",   "domain": "laposte.fr",     "patterns": [r"code=(\d+)"]},
+    {"name": "Chronopost",  "domain": "chronopost.fr",  "patterns": [r"skybillNumber=([A-Z0-9]+)", r"listeNumerosLT=([A-Z0-9]+)"]},
+    {"name": "DB Schenker", "domain": "dbschenker.com", "patterns": [r"refNumber=([A-Z0-9]+)"]},
+    {"name": "DPD",         "domain": "dpd.fr",         "patterns": [r"parcelNumber=([A-Z0-9]+)"]},
+    {"name": "UPS",         "domain": "ups.com",        "patterns": [r"tracknum=([A-Z0-9]+)"]},
+    {"name": "FedEx",       "domain": "fedex.com",      "patterns": [r"tracknumbers=([A-Z0-9]+)"]},
+    {"name": "TLA",         "domain": "tla",            "patterns": [r"sReference=([A-Z0-9]+)", r"reference=([A-Z0-9]+)", r"id=([A-Z0-9]+)"]},
 ]
 
 
@@ -55,10 +56,14 @@ def _detect_carrier(tracking_url: str) -> tuple[str | None, str | None]:
     """Détecte le transporteur et extrait le numéro de suivi depuis l'URL."""
     if not tracking_url:
         return None, None
+    url = tracking_url.strip()
     for carrier in _CARRIERS:
-        if carrier["domain"] in tracking_url.lower():
-            m = re.search(carrier["pattern"], tracking_url)
-            return carrier["name"], (m.group(1) if m else None)
+        if carrier["domain"] in url.lower():
+            for pattern in carrier.get("patterns", []):
+                m = re.search(pattern, url, re.IGNORECASE)
+                if m:
+                    return carrier["name"], m.group(1)
+            return carrier["name"], None
     return "Inconnu", None
 
 
@@ -123,6 +128,59 @@ class SetinTrackingScraper(BaseScraper):
             self.log.debug("Timeout load — continuant...")
         self.log.info("Connexion terminée — URL : %s", page.url)
 
+    async def _extract_tracking_number_from_page(self, page: Page, tracking_url: str) -> str | None:
+        """Ouvre la page de suivi et extrait le numéro si l'URL ne le contient pas."""
+        if not tracking_url or tracking_url.strip() == "0":
+            return None
+
+        new_page = None
+        try:
+            new_page = await page.context.new_page()
+            await new_page.goto(tracking_url)
+            await new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+
+            try:
+                title_loc = new_page.locator("div.ch-block-content-title")
+                if await title_loc.count() > 0:
+                    raw_title = (await title_loc.first.inner_text()).strip()
+                    raw_title = raw_title.replace(
+                        "Informations concernant votre envoi", ""
+                    ).strip()
+                    m = re.search(r"([A-Z0-9]+)", raw_title, re.IGNORECASE)
+                    if m:
+                        return m.group(1).strip()
+            except Exception:
+                pass
+
+            try:
+                ref_input = new_page.locator('input[name="sReference"]')
+                if await ref_input.count() > 0:
+                    value = (await ref_input.first.get_attribute("value")) or ""
+                    value = value.strip()
+                    if value and value != "0":
+                        return value
+            except Exception:
+                pass
+
+            try:
+                body_text = await new_page.locator("body").inner_text()
+                m = re.search(r"\b([A-Z0-9]{8,})\b", body_text, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+            except Exception:
+                pass
+
+            return None
+        except Exception as exc:
+            self.log.debug("Erreur extraction numéro de suivi page de suivi : %s", exc)
+            return None
+        finally:
+            if new_page:
+                try:
+                    await new_page.close()
+                except Exception:
+                    pass
+
     # ─── Extraction d'une commande (locator Playwright) ───────────────────────
 
     async def _extract_order(self, page: Page, order_el) -> dict | None:
@@ -162,11 +220,18 @@ class SetinTrackingScraper(BaseScraper):
 
             tracking_loc = order_el.locator(Selectors.order_tracking)
             if await tracking_loc.count() > 0:
-                tracking_url = await tracking_loc.first.get_attribute("href") or ""
-                trackinglink_exp = tracking_url or None
-                carrier_exp, tracking_exp = _detect_carrier(tracking_url)
-                if carrier_exp == "Inconnu":
-                    self.log.warning("Transporteur inconnu — %s : %s", id_cmd, tracking_url)
+                tracking_url = (await tracking_loc.first.get_attribute("href")) or ""
+                if tracking_url and tracking_url != "0":
+                    trackinglink_exp = tracking_url
+                    carrier_exp, tracking_exp = _detect_carrier(tracking_url)
+                    if not tracking_exp:
+                        tracking_exp = await self._extract_tracking_number_from_page(page, tracking_url)
+                    if carrier_exp == "Inconnu":
+                        self.log.warning("Transporteur inconnu — %s : %s", id_cmd, tracking_url)
+                else:
+                    trackinglink_exp = None
+                    carrier_exp = None
+                    tracking_exp = None
 
             # Date reliquat depuis la liste (ligne-4)
             Date_Reliquat: str | None = None

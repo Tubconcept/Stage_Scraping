@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import json
+import re
 import argparse
 from typing import List, Dict, Optional
 
@@ -113,6 +114,21 @@ def _session_perdue(ex: Exception) -> bool:
     """Retourne True si l'exception indique une perte de session Chrome."""
     msg = str(ex).lower()
     return not msg or "target" in msg or "goodbye" in msg or "connection" in msg or "closed" in msg
+
+
+def _variant_url(base_url: str, variant_ref: str) -> str:
+    """Remplace les chiffres finaux du dernier segment de l'URL par la ref de la variante.
+
+    Exemple : ".../wi693165" + "693166" → ".../wi693166"
+    Évite les doublons d'URL pour les déclinaisons d'un même produit.
+    """
+    if not variant_ref:
+        return base_url
+    last_seg = base_url.rsplit("/", 1)[-1]
+    new_last = re.sub(r"\d+$", variant_ref, last_seg)
+    if new_last == last_seg:
+        return base_url
+    return base_url.rsplit("/", 1)[0] + "/" + new_last
 
 
 # ─── PHASE 1 : collecte des URLs produits (navigateur unique) ─────────────────
@@ -262,7 +278,9 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
                     if db_conn:
                         try:
                             mapped = _map_to_csv_headers(row, cat1, cat2, cat3)
-                            mapped["product_fournisseur_url"] = item.get("url", "")
+                            is_combo = str(row.get("isCombination", "False")) == "True"
+                            variant_ref = row.get("productRef", "") if is_combo else ""
+                            mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
                             insert_product(db_conn, "legallais", mapped)
                         except Exception as _db_exc:
                             logger.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
@@ -368,7 +386,9 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                                     if db_conn:
                                         try:
                                             mapped = _map_to_csv_headers(row, cat1, cat2, cat3)
-                                            mapped["product_fournisseur_url"] = full_href
+                                            is_combo = str(row.get("isCombination", "False")) == "True"
+                                            variant_ref = row.get("productRef", "") if is_combo else ""
+                                            mapped["product_fournisseur_url"] = _variant_url(full_href, variant_ref)
                                             insert_product(db_conn, "legallais", mapped)
                                         except Exception as _db_exc:
                                             logger.debug(f"MariaDB produit ignoré : {_db_exc}")
@@ -415,7 +435,9 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                         if db_conn:
                             try:
                                 mapped = _map_to_csv_headers(row, c1, c2, c3)
-                                mapped["product_fournisseur_url"] = item.get("url", "")
+                                is_combo = str(row.get("isCombination", "False")) == "True"
+                                variant_ref = row.get("productRef", "") if is_combo else ""
+                                mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
                                 insert_product(db_conn, "legallais", mapped)
                             except Exception as _db_exc:
                                 logger.debug(f"MariaDB produit ignoré : {_db_exc}")

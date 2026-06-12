@@ -423,6 +423,11 @@ def get_order_detail(page, order: dict) -> dict | None:
         except Exception:
             pass
 
+    # DPD et GEODIS sur P3 : numéro extrait non exploitable — on le supprime
+    # mais on conserve le nom du transporteur pour la remontée fournisseur.
+    if carrier in ("DPD", "GEODIS"):
+        tracking_number = ""
+
     # Normalisation date pour stockage SQLite (format ISO)
     try:
         date_iso = datetime.strptime(order["date"], "%d/%m/%Y").strftime("%Y-%m-%d")
