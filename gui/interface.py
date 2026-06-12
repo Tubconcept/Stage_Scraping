@@ -310,7 +310,8 @@ class ScraperApp(tk.Tk):
         row.pack(pady=5)
         self._action_btns: dict[str, tk.Button] = {}
         for label, key in [("Produits", "produits"), ("Commandes", "commandes"),
-                            ("Suivi Commandes", "suivi"), ("Suppression Adresses", "suppr")]:
+                            ("Suivi Commandes", "suivi"), ("Suppression Adresses", "suppr"),
+                            ("Màj par références", "refs")]:
             b = tk.Button(row, text=label, font=("Helvetica", 10),
                           bg=YELLOW, fg=BLACK, padx=13, pady=6,
                           relief="flat", cursor="hand2",
@@ -323,7 +324,7 @@ class ScraperApp(tk.Tk):
         # pack() déclenché dans _select_action
         self._panels: dict[str, tk.Frame] = {
             k: self._make_panel(k)
-            for k in ("produits", "commandes", "suivi", "suppr")
+            for k in ("produits", "commandes", "suivi", "suppr", "refs")
         }
 
     def _make_panel(self, key: str) -> tk.Frame:
@@ -336,6 +337,7 @@ class ScraperApp(tk.Tk):
             "commandes": "Scraping Commandes",
             "suivi":     "Suivi Commandes",
             "suppr":     "Suppression d'adresses",
+            "refs":      "Mise à jour par références",
         }
         tk.Label(frm, text=_TITLES[key],
                  font=("Helvetica", 13, "bold"), bg=BG, fg=BLACK).pack()
@@ -359,6 +361,34 @@ class ScraperApp(tk.Tk):
                                           font=("Helvetica", 10))
             frm.cat_combo.pack(side="left", padx=8)
             frm.cat_row = row
+
+        elif key == "refs":
+            tk.Label(frm.input_area,
+                     text="Choisir un fichier CSV ou JSON contenant les références à mettre à jour",
+                     font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY).pack(pady=(2, 4))
+
+            frow = tk.Frame(frm.input_area, bg=BG)
+            frow.pack(pady=2)
+            frm.refs_path_var = tk.StringVar(value="Aucun fichier sélectionné")
+            frm.refs_lbl = tk.Label(
+                frow, textvariable=frm.refs_path_var,
+                font=("Helvetica", 9), bg=BG, fg=GRAY,
+                width=36, anchor="w",
+            )
+            frm.refs_lbl.pack(side="left", padx=(0, 6))
+            tk.Button(
+                frow, text="Choisir un fichier",
+                font=("Helvetica", 9), bg=YELLOW, fg=BLACK,
+                padx=8, pady=2, relief="flat", cursor="hand2",
+                command=lambda: self._pick_refs_file("refs"),
+            ).pack(side="left", padx=2)
+            tk.Button(
+                frow, text="Effacer",
+                font=("Helvetica", 9), bg=BTN_RED, fg=WHITE,
+                padx=8, pady=2, relief="flat", cursor="hand2",
+                command=lambda: self._clear_refs_file("refs"),
+            ).pack(side="left", padx=2)
+            frm.refs_file_path: Path | None = None
 
         elif key == "commandes":
             for attr, label in [("entry_from", "Date début  (JJ/MM/AAAA) :"),
@@ -506,9 +536,9 @@ class ScraperApp(tk.Tk):
         self._set_done(key, "Arrêt demandé...")
 
     def _download(self, key: str):
-        if key == "suppr":
+        if key in ("suppr", "refs"):
             messagebox.showinfo("Non disponible",
-                                "Aucun export CSV pour la suppression d'adresses.")
+                                "Aucun export CSV pour cette action.")
             return
 
         if not self._site:
@@ -564,11 +594,124 @@ class ScraperApp(tk.Tk):
         if tmp_path.exists():
             tmp_path.unlink()
 
+    # ─── Sélecteur de fichier de références ──────────────────────────────────
+
+    def _pick_refs_file(self, key: str) -> None:
+        path_str = filedialog.askopenfilename(
+            title="Choisir un fichier de références",
+            filetypes=[
+                ("CSV et JSON", "*.csv *.json"),
+                ("CSV", "*.csv"),
+                ("JSON", "*.json"),
+                ("Tous les fichiers", "*.*"),
+            ],
+        )
+        if not path_str:
+            return
+        panel = self._panels[key]
+        panel.refs_file_path = Path(path_str)
+        panel.refs_path_var.set(Path(path_str).name)
+        panel.refs_lbl.config(fg=GREEN_TXT)
+
+    def _clear_refs_file(self, key: str) -> None:
+        panel = self._panels[key]
+        panel.refs_file_path = None
+        panel.refs_path_var.set("Aucun fichier sélectionné")
+        panel.refs_lbl.config(fg=GRAY)
+
+    # ─── Lancement mode références ────────────────────────────────────────────
+
+    _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians"}
+
+    _REFS_MODULES = {
+        "setin":     "scrapers.Setin_P5.products.scrap_setin_by_refs",
+        "legallais": "scrapers.Legallais_P1.products.scrap_legallais_by_refs",
+        "prolians":  "scrapers.Prolians_P3.products.scrap_prolians_by_refs",
+    }
+
+    # Sites dont le scraper par-refs est synchrone (Botasaurus)
+    _SYNC_REFS_SITES = {"legallais"}
+
+    def _launch_by_refs(self, file_path: Path) -> None:
+        """Valide le fichier, copie dans data/imports/ et lance le scraper par refs."""
+        from core.ref_import import (
+            load_refs, validate_refs, copy_import_file, site_ref_label,
+        )
+
+        site_key = self._SITE_KEYS.get(self._site, "")
+        if not site_key:
+            messagebox.showerror("Erreur", "Aucun site sélectionné.")
+            return
+
+        # Lecture
+        try:
+            refs = load_refs(file_path)
+        except Exception as exc:
+            messagebox.showerror("Erreur lecture fichier", str(exc))
+            return
+
+        if not refs:
+            messagebox.showerror("Fichier vide",
+                                 "Le fichier ne contient aucune référence.")
+            return
+
+        # Validation
+        try:
+            valid, invalid = validate_refs(refs, site_key)
+        except ValueError as exc:
+            messagebox.showerror("Erreur validation", str(exc))
+            return
+
+        if not valid:
+            messagebox.showerror(
+                "Références invalides",
+                f"Le fichier ne contient pas des références valides "
+                f"pour {self._site}.\n\n"
+                f"Format attendu : {site_ref_label(site_key)}\n\n"
+                f"Exemples invalides : {', '.join(invalid[:5])}"
+                + (" …" if len(invalid) > 5 else ""),
+            )
+            return
+
+        if invalid:
+            poursuivre = messagebox.askyesno(
+                "Références partiellement invalides",
+                f"{len(valid)} valide(s) sur {len(refs)}.\n\n"
+                f"Invalides ({len(invalid)}) : {', '.join(invalid[:5])}"
+                + (" …" if len(invalid) > 5 else "") + "\n\n"
+                "Continuer avec les références valides uniquement ?",
+            )
+            if not poursuivre:
+                return
+
+        # Copie dans data/imports/
+        try:
+            copy_import_file(file_path)
+        except Exception:
+            pass  # non bloquant
+
+        # Lancement du scraper
+        mod     = import_module(self._REFS_MODULES[site_key])
+        scraper = mod.create_scraper(refs=valid)
+
+        if site_key in self._SYNC_REFS_SITES:
+            self._start_sync("refs", scraper.run, lambda: "")
+        else:
+            self._start_async("refs", scraper.run(), scraper, lambda: "")
+
     # ─── Lanceurs Setin ───────────────────────────────────────────────────────
 
     def _launch_setin(self, key: str):
         panel = self._panels[key]
         cfg   = SITES_CONFIG["Setin"]
+
+        if key == "refs":
+            if not getattr(panel, "refs_file_path", None):
+                messagebox.showerror("Fichier manquant",
+                                     "Veuillez choisir un fichier de références.")
+                return
+            self._launch_by_refs(panel.refs_file_path)
+            return
 
         if key == "produits":
             cat     = panel.cat_var.get()
@@ -602,6 +745,14 @@ class ScraperApp(tk.Tk):
         panel = self._panels[key]
         cfg   = SITES_CONFIG["Prolians"]
 
+        if key == "refs":
+            if not getattr(panel, "refs_file_path", None):
+                messagebox.showerror("Fichier manquant",
+                                     "Veuillez choisir un fichier de références.")
+                return
+            self._launch_by_refs(panel.refs_file_path)
+            return
+
         if key == "produits":
             mod     = import_module(cfg["imports"]["produits"])
             scraper = mod.create_scraper()
@@ -628,6 +779,14 @@ class ScraperApp(tk.Tk):
     def _launch_legallais(self, key: str):
         panel = self._panels[key]
         cfg   = SITES_CONFIG["Legallais"]
+
+        if key == "refs":
+            if not getattr(panel, "refs_file_path", None):
+                messagebox.showerror("Fichier manquant",
+                                     "Veuillez choisir un fichier de références.")
+                return
+            self._launch_by_refs(panel.refs_file_path)
+            return
 
         if key == "produits":
             cat = panel.cat_var.get() if cfg.get("has_categories") else ""

@@ -42,6 +42,19 @@ class Selectors:
     user_info = "div.info-perso"
     page_loader = "div#loaderPage"
 
+    # --- Recherche par référence ---
+    # Sélecteurs triés du plus précis au plus générique
+    search_input_selectors: list[str] = [
+        'input[name="recherche"]',          # attribut name = paramètre GET du formulaire Setin
+        'input[type="search"]',             # champ de type search standard
+        'input[placeholder*="Rechercher"]', # placeholder visible dans le header
+        'input[placeholder*="article"]',    # sous-chaine du placeholder
+        'form input[type="text"]',          # tout input texte dans un formulaire
+    ]
+    search_input = 'input[name="recherche"]'  # sélecteur principal (rétrocompatibilité)
+    search_result_box = "div.product_box"     # résultat présent sur la page de résultats
+    no_result_message = "div.results_not_found"  # message "aucun résultat" de Setin
+
     # --- Navigation catalogue ---
     menu_products = "li#menu-produits a.boutonHautLien.d-block"
     category_level1 = 'ul.category_niv1 li[aria-label="{category}"] a'
