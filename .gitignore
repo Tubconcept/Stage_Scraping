@@ -232,3 +232,4 @@ data/imports/
 *.csv
 *.txt
 *.log
+*.bak
