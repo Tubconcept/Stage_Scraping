@@ -238,17 +238,17 @@ class SetinProductScraper(BaseScraper):
     # ─── Extraction des données d'une page produit ────────────────────────────
 
     async def _get_product_data(
-        self, page: Page, url: str, current_index: int
-    ) -> tuple[int, list[dict]]:
+        self, page: Page, url: str
+    ) -> tuple[bool, list[dict]]:
         """Visite une page produit et extrait toutes ses variantes.
 
         Args:
             page: Page Playwright active.
             url: URL de la fiche produit.
-            current_index: Index courant de combinaison (pour le lien parent).
 
         Returns:
-            Tuple (index mis à jour, liste de dicts produit).
+            Tuple (has_combo, liste de dicts produit).
+            has_combo = True si au moins une variante est une déclinaison.
         """
         self.log.info("Visite produit : %s", url)
         await page.goto(url)
@@ -292,16 +292,13 @@ class SetinProductScraper(BaseScraper):
 
             try:
                 produit, row_updates_index = await self._extract_row_data(
-                    page, row, url, grp_ref, nb_rows, current_index
+                    page, row, url, grp_ref, nb_rows
                 )
                 products.append(produit)
                 if row_updates_index:
                     update_index = True
             except Exception as exc:
                 log_exception(self.log, exc, f"Extraction ligne {url}")
-
-        if update_index:
-            current_index += 1
 
         # Champs communs à toutes les variantes (page produit)
         page_status = await self._get_product_status(page)
@@ -332,7 +329,7 @@ class SetinProductScraper(BaseScraper):
             elif not cs_raw:
                 p["product_cross_sell"] = ""
 
-        return current_index, products
+        return update_index, products
 
     # ─── Extraction d'une ligne variante ──────────────────────────────────────
 
@@ -343,7 +340,6 @@ class SetinProductScraper(BaseScraper):
         url: str,
         grp_ref: list[str],
         nb_rows: int,
-        current_index: int,
     ) -> tuple[dict, bool]:
         """Extrait toutes les données d'une ligne variante (tableau de variations).
 
@@ -353,10 +349,9 @@ class SetinProductScraper(BaseScraper):
             url: URL de la fiche produit (pour les logs).
             grp_ref: Liste des références du groupe (modifiée en place).
             nb_rows: Nombre total de variantes sur la page.
-            current_index: Index courant de combinaison.
 
         Returns:
-            Tuple (dict produit, booléen indiquant si l'index doit être incrémenté).
+            Tuple (dict produit, booléen indiquant s'il y a une déclinaison).
         """
         # --- Titre ---
         title = ""
@@ -540,7 +535,7 @@ class SetinProductScraper(BaseScraper):
                     if ref in group_ref:
                         group_ref.remove(ref)
 
-                    index_combination = current_index
+                    index_combination = None
                     update_current_index = True
                     is_combination = True
 

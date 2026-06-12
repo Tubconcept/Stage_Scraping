@@ -260,9 +260,11 @@ def get_Info(driver: Driver, cmd):
     try:
         try:
             header   = driver.select_all(ORDER_HEADER_LINES, 0)
-            date_cmd = nettoyer_texte(header[1].text.replace("Commandée le", "").strip())
+            date_raw = header[1].text.replace("Commandée le", "").strip()
         except:
-            date_cmd = nettoyer_texte(driver.select(ORDER_DATE_TEXT, 0).text)
+            date_raw = driver.select(ORDER_DATE_TEXT, 0).text.strip()
+        m = re.search(r"\d{2}/\d{2}/\d{4}", date_raw)
+        date_cmd = m.group(0) if m else nettoyer_texte(date_raw)
     except Exception as e:
         log_exception(today, e, "Erreur de date" + ref_cmd)
     print(date_cmd)

@@ -34,7 +34,7 @@ from scrapers.Prolians_P3.products.scraper_prolians_products import (
     extract_sitemap_urls, extract_product_from_dom,
     FIELDNAMES, SITEMAP_INDEX
 )
-from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls
+from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
 
 ROOT = PROJECT_ROOT
 load_dotenv(ROOT / ".env")
@@ -160,13 +160,21 @@ def main():
                         sys.exit(1)
                     page.goto(url, wait_until="domcontentloaded", timeout=10000)
 
-                rows = extract_product_from_dom(page, count_produit + 1)
+                rows = extract_product_from_dom(page)
                 if not rows:
                     print("Produit ignoré (data=None)")
                     with open(crash_file, "a", encoding="utf-8") as cf:
                         cf.write(url + "\n")
                     continue
-                # Une ou plusieurs lignes par fiche (déclinaisons = plusieurs insertions)
+                if any(r.get("products_is_combination") == "True" for r in rows):
+                    parent_ref = rows[0].get("product_parent_reference", "")
+                    try:
+                        grp_idx = resolve_decli_index("prolians", parent_ref)
+                    except Exception:
+                        grp_idx = count_produit + 1
+                    for row in rows:
+                        if row.get("products_is_combination") == "True":
+                            row["product_combination_index"] = grp_idx
                 if db_conn:
                     for row in rows:
                         try:
@@ -283,11 +291,20 @@ class ProlianProductScraper:
                     if not ensure_logged_in(page, context, USERNAME, PASSWORD):
                         break
                     page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                rows = extract_product_from_dom(page, count + 1)
+                rows = extract_product_from_dom(page)
                 if not rows:
                     with open(crash_file, "a", encoding="utf-8") as cf:
                         cf.write(url + "\n")
                     continue
+                if any(r.get("products_is_combination") == "True" for r in rows):
+                    parent_ref = rows[0].get("product_parent_reference", "")
+                    try:
+                        grp_idx = resolve_decli_index("prolians", parent_ref)
+                    except Exception:
+                        grp_idx = count + 1
+                    for row in rows:
+                        if row.get("products_is_combination") == "True":
+                            row["product_combination_index"] = grp_idx
                 if db_conn:
                     for row in rows:
                         try:

@@ -39,7 +39,7 @@ from css_selectors.setin import Selectors
 from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
 from core.base_scraper import BaseScraper
 from core.logger import log_exception
-from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls
+from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
 try:
     from .scraper_setin_products import SetinProductScraper as _SetinCSS
     from ..orders.scraper_setin_orders import SetinOrderScraper as _OrderCSS
@@ -141,7 +141,6 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
             else:
                 self.log.info("Session active")
 
-            current_index = 1
             # Seed 'seen' from DB so that already-scraped URLs are skipped on resume
             seen: set[str] = (
                 get_scraped_product_urls(self._db_conn, "setin")
@@ -163,9 +162,16 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
                         continue
                     seen.add(link)
                     try:
-                        current_index, products = await self._get_product_data(
-                            page, link, current_index
-                        )
+                        has_combo, products = await self._get_product_data(page, link)
+                        if has_combo and products:
+                            parent_ref = products[0].get("parent", "") or ""
+                            try:
+                                grp_idx = resolve_decli_index("setin", parent_ref)
+                                for _p in products:
+                                    if _p.get("IsCombination"):
+                                        _p["IndexCombination"] = grp_idx
+                            except Exception:
+                                pass
                         cat1, cat2, cat3 = await self._ariane(page)
                         for produit in products:
                             self._persist_product(produit, cat1, cat2, cat3, link)
@@ -193,9 +199,16 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
                         if link not in seen:
                             seen.add(link)
                             try:
-                                current_index, products = await self._get_product_data(
-                                    product_page, link, current_index
-                                )
+                                has_combo, products = await self._get_product_data(product_page, link)
+                                if has_combo and products:
+                                    parent_ref = products[0].get("parent", "") or ""
+                                    try:
+                                        grp_idx = resolve_decli_index("setin", parent_ref)
+                                        for _p in products:
+                                            if _p.get("IsCombination"):
+                                                _p["IndexCombination"] = grp_idx
+                                    except Exception:
+                                        pass
                                 cat1, cat2, cat3 = await self._ariane(product_page)
                                 for produit in products:
                                     self._persist_product(produit, cat1, cat2, cat3, link)
@@ -230,9 +243,16 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
                             if limit_products is not None and rows_written >= limit_products:
                                 break
                             try:
-                                current_index, products = await self._get_product_data(
-                                    product_page, link, current_index
-                                )
+                                has_combo, products = await self._get_product_data(product_page, link)
+                                if has_combo and products:
+                                    parent_ref = products[0].get("parent", "") or ""
+                                    try:
+                                        grp_idx = resolve_decli_index("setin", parent_ref)
+                                        for _p in products:
+                                            if _p.get("IsCombination"):
+                                                _p["IndexCombination"] = grp_idx
+                                    except Exception:
+                                        pass
                                 cat1, cat2, cat3 = await self._ariane(product_page)
                                 for produit in products:
                                     self._persist_product(produit, cat1, cat2, cat3, link)

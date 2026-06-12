@@ -35,7 +35,7 @@ from botasaurus.browser import browser, Driver
 from core.config import JSON_DIR, CSV_HEADERS
 from css_selectors.legallais import BASE_URL, SELECTORS, CATEGORY_NAMES
 from core.utils import logger
-from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls
+from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
 
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
 try:
@@ -256,8 +256,16 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
 
             cat1, cat2, cat3 = item["cat1"], item["cat2"], item["cat3"]
 
-            rows = scraper.scrape_product(ok + 1)
+            rows = scraper.scrape_product()
             if rows:
+                if rows[0].get("isCombination") == "True":
+                    parent_ref = rows[0].get("parentRef", "")
+                    try:
+                        grp_idx = resolve_decli_index("legallais", parent_ref)
+                    except Exception:
+                        grp_idx = ok + 1
+                    for _r in rows:
+                        _r["combinationIndex"] = grp_idx
                 for row in rows:
                     if db_conn:
                         try:
@@ -361,7 +369,15 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
 
                             logger.info(f"  → Produit {ok + err + 1} : {full_href}")
                             driver.get(full_href)
-                            rows = scraper.scrape_product(ok + 1)
+                            rows = scraper.scrape_product()
+                            if rows and rows[0].get("isCombination") == "True":
+                                parent_ref = rows[0].get("parentRef", "")
+                                try:
+                                    grp_idx = resolve_decli_index("legallais", parent_ref)
+                                except Exception:
+                                    grp_idx = ok + 1
+                                for _r in rows:
+                                    _r["combinationIndex"] = grp_idx
 
                             if rows:
                                 for row in rows:
@@ -403,12 +419,18 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
             db_conn.close()
 
     else:  # mode search
-        group_index = 0
         for item in products:
             try:
                 driver.get(item["url"])
-                group_index += 1
-                rows = scraper.scrape_product(group_index)
+                rows = scraper.scrape_product()
+                if rows and rows[0].get("isCombination") == "True":
+                    parent_ref = rows[0].get("parentRef", "")
+                    try:
+                        grp_idx = resolve_decli_index("legallais", parent_ref)
+                    except Exception:
+                        grp_idx = 1
+                    for _r in rows:
+                        _r["combinationIndex"] = grp_idx
                 if rows:
                     c1, c2, c3 = item.get("cat1", ""), item.get("cat2", ""), item.get("cat3", "")
                     for row in rows:
