@@ -627,13 +627,44 @@ class ScraperApp(tk.Tk):
             return
 
         if n_rows == 0:
-            period = "ces 7 derniers jours" if since else "dans cette table"
-            messagebox.showinfo("Base vide",
-                                f"Aucune donnée {period} ({table}).\n"
-                                "Lancez d'abord le scraper pour peupler la base.")
             if tmp_path.exists():
                 tmp_path.unlink()
-            return
+            if since:
+                # Vérifie si la table contient des données (période quelconque)
+                try:
+                    total = export_table_to_csv(None, table, headers, tmp_path)
+                except Exception:
+                    total = 0
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                if total > 0:
+                    # Des données existent mais pas sur les 7 derniers jours
+                    ans = messagebox.askyesno(
+                        "Aucune donnée sur 7 jours",
+                        f"Aucune donnée pour les 7 derniers jours dans {table}.\n\n"
+                        f"La table contient {total} ligne(s) au total.\n"
+                        "Voulez-vous télécharger toutes les données à la place ?",
+                    )
+                    if not ans:
+                        return
+                    # Relance sans filtre
+                    try:
+                        n_rows = export_table_to_csv(None, table, headers, tmp_path)
+                    except Exception as exc:
+                        messagebox.showerror("Erreur base de données",
+                                             f"Impossible de lire {table} :\n{exc}")
+                        return
+                    since = None  # nom de fichier sans suffixe _7j
+                else:
+                    messagebox.showinfo("Table vide",
+                                        f"Aucune donnée dans {table}.\n"
+                                        "Lancez d'abord le scraper pour peupler la base.")
+                    return
+            else:
+                messagebox.showinfo("Table vide",
+                                    f"Aucune donnée dans {table}.\n"
+                                    "Lancez d'abord le scraper pour peupler la base.")
+                return
 
         run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
         suffix = "_7j" if since else ""

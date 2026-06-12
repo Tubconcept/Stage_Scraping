@@ -564,11 +564,11 @@ class LegallaisScraper:
                     rows.append(row)
             else:
                 base_row["isCombination"] = "False"
-                base_row["combinationIndex"] = group_index
+                base_row["combinationIndex"] = ""
                 rows.append(base_row)
         except Exception:
             base_row["isCombination"] = "False"
-            base_row["combinationIndex"] = group_index
+            base_row["combinationIndex"] = ""
             rows.append(base_row)
 
         return rows
