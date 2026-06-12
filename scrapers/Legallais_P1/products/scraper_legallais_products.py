@@ -193,7 +193,7 @@ class LegallaisScraper:
 
     # ─── Extraction page produit ──────────────────────────────────────────────
 
-    def scrape_product(self, group_index: int = 1) -> List[Dict]:
+    def scrape_product(self) -> List[Dict]:
         from css_selectors.legallais import SELECTORS
         from core.utils import clean_text
         d = self._driver
@@ -542,7 +542,7 @@ class LegallaisScraper:
                     tds = combo.select_all("td", 0)
                     row = dict(base_row)
                     row["isCombination"]       = "True"
-                    row["combinationIndex"]    = group_index
+                    row["combinationIndex"]    = None
                     row["parentRef"]           = base_row["productRef"]
                     row["childRefs"]           = child_refs_str
                     if tds:

@@ -25,7 +25,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from botasaurus.browser import Driver, browser
 
 from css_selectors.legallais import BASE_URL, SELECTORS
-from db.mariadb_db import init_site_db, upsert_product
+from db.mariadb_db import init_site_db, upsert_product, resolve_decli_index
 
 try:
     from .scraper_legallais_products import LegallaisScraper
@@ -104,11 +104,19 @@ def _search_and_scrape(driver: Driver, data: dict | None = None) -> None:
             driver.get(product_url)
 
             # ── Extraction des données ───────────────────────────────────────
-            rows = scraper.scrape_product(idx)
+            rows = scraper.scrape_product()
             if not rows:
                 print(f"   Aucune donnée extraite : {product_url}")
                 driver.get(BASE_URL)
                 continue
+            if rows[0].get("isCombination") == "True":
+                parent_ref = rows[0].get("parentRef", "")
+                try:
+                    grp_idx = resolve_decli_index("legallais", parent_ref)
+                    for _r in rows:
+                        _r["combinationIndex"] = grp_idx
+                except Exception:
+                    pass
 
             if db_conn:
                 for row in rows:

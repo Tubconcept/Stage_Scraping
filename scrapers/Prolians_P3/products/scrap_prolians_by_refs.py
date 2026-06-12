@@ -29,7 +29,7 @@ from playwright.sync_api import sync_playwright
 
 from auth.prolians.cookie_manager import ensure_logged_in, is_logged_in
 from css_selectors.prolians import Selectors
-from db.mariadb_db import init_site_db, upsert_product
+from db.mariadb_db import init_site_db, upsert_product, resolve_decli_index
 from scrapers.Prolians_P3.products.scraper_prolians_products import extract_product_from_dom
 
 load_dotenv(_PROJECT_ROOT / ".env")
@@ -147,10 +147,19 @@ class ProlianByRefsScraper:
                         print(f"   Fiche non chargée pour : {ref}")
                         continue
 
-                    rows = extract_product_from_dom(page, count + 1)
+                    rows = extract_product_from_dom(page)
                     if not rows:
                         print(f"   Aucune donnée extraite pour : {ref}")
                         continue
+                    if any(r.get("products_is_combination") == "True" for r in rows):
+                        parent_ref = rows[0].get("product_parent_reference", "")
+                        try:
+                            grp_idx = resolve_decli_index("prolians", parent_ref)
+                            for row in rows:
+                                if row.get("products_is_combination") == "True":
+                                    row["product_combination_index"] = grp_idx
+                        except Exception:
+                            pass
 
                     if db_conn:
                         for row in rows:

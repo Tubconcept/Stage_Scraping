@@ -28,7 +28,7 @@ from css_selectors.setin import Selectors
 from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
 from core.base_scraper import BaseScraper
 from core.logger import log_exception
-from db.mariadb_db import init_site_db, upsert_product
+from db.mariadb_db import init_site_db, upsert_product, resolve_decli_index
 
 try:
     from .scraper_setin_products import SetinProductScraper as _SetinCSS
@@ -143,7 +143,6 @@ class SetinByRefsScraper(_SetinCSS):
                 self.log.info("Session active")
 
             self.log.info("Mode références Setin : %d référence(s)", len(self._refs))
-            current_index = 1
 
             for ref in self._refs:
                 if self.should_stop():
@@ -215,9 +214,16 @@ class SetinByRefsScraper(_SetinCSS):
                         self.log.info("[%s] 1er produit trouvé : %s", ref, product_url)
 
                     # ── 5. Extraire la fiche produit ──────────────────────────
-                    current_index, products = await self._get_product_data(
-                        page, product_url, current_index
-                    )
+                    has_combo, products = await self._get_product_data(page, product_url)
+                    if has_combo and products:
+                        parent_ref = products[0].get("parent", "") or ""
+                        try:
+                            grp_idx = resolve_decli_index("setin", parent_ref)
+                            for _p in products:
+                                if _p.get("IsCombination"):
+                                    _p["IndexCombination"] = grp_idx
+                        except Exception:
+                            pass
 
                     if not products:
                         self.log.warning("[%s] Aucune donnée extraite de : %s", ref, product_url)

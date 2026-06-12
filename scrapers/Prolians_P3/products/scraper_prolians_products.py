@@ -222,7 +222,7 @@ def _extract_declinaisons(page, radios):
 # DOM EXTRACTION
 # =============================
 
-def extract_product_from_dom(page, group_index: int = 1):
+def extract_product_from_dom(page):
     """
     Extrait une ou plusieurs lignes produit depuis la page Playwright courante.
 
@@ -396,7 +396,7 @@ def extract_product_from_dom(page, group_index: int = 1):
 
             for idx, decli in enumerate(declinaisons, start=1):
                 row = dict(data)
-                row["product_combination_index"]     = group_index
+                row["product_combination_index"]     = None
                 row["product_combination_values"]    = decli["label"]
                 row["product_reference_fournisseur"] = decli["ref_prolians"] or ref_prolians_init
                 row["product_reference_fabricant"]   = decli["ref_fab"] or ref_fab_init

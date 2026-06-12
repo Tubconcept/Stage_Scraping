@@ -95,7 +95,7 @@ _SENTINEL = _ConnSentinel()
 # ─── Création des tables ──────────────────────────────────────────────────────
 
 def _ensure_tables(site: str) -> None:
-    """Crée les 3 tables du site si elles n'existent pas encore."""
+    """Crée les 3 tables et la séquence de déclinaisons du site si nécessaire."""
     prefix = SITE_PREFIX[site]
     conn = _get_conn()
     try:
@@ -115,6 +115,12 @@ def _ensure_tables(site: str) -> None:
                     f") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
                 )
                 _log.debug("Table prête : %s", table)
+            # Séquence globale d'index pour les groupes de déclinaisons
+            cur.execute(
+                f"CREATE SEQUENCE IF NOT EXISTS `seq_decli_{prefix}`"
+                " START WITH 1 INCREMENT BY 1 CACHE 100 NOCYCLE"
+            )
+            _log.debug("Séquence prête : seq_decli_%s", prefix)
         conn.commit()
     finally:
         conn.close()
@@ -284,6 +290,61 @@ def get_scraped_product_urls(_conn, site: str) -> set[str]:
         conn_db.close()
 
 
+# ─── Séquences de groupes de déclinaisons ────────────────────────────────────
+
+def next_decli_index(site: str) -> int:
+    """Consomme et retourne la prochaine valeur de la séquence de déclinaisons."""
+    prefix = SITE_PREFIX[site]
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT NEXTVAL(`seq_decli_{prefix}`)")
+            return int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def get_decli_index_for_parent(site: str, parent_ref: str) -> int | None:
+    """Retourne l'index de déclinaison déjà attribué à parent_ref dans la table produits."""
+    if not parent_ref:
+        return None
+    table = _table(site, "products")
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT `product_combination_index` FROM `{table}`"
+                " WHERE `product_parent_reference` = %s"
+                "   AND `product_combination_index` IS NOT NULL"
+                "   AND `product_combination_index` <> ''"
+                " LIMIT 1",
+                (parent_ref,),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    return int(row[0])
+                except (ValueError, TypeError):
+                    return None
+            return None
+    except pymysql.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def resolve_decli_index(site: str, parent_ref: str) -> int:
+    """Retourne l'index de groupe de déclinaisons pour parent_ref.
+
+    Réutilise l'index existant en base si parent_ref est déjà connu,
+    sinon consomme la séquence MariaDB (atomique, thread-safe).
+    """
+    existing = get_decli_index_for_parent(site, parent_ref)
+    if existing is not None:
+        return existing
+    return next_decli_index(site)
+
+
 # ─── Export CSV ───────────────────────────────────────────────────────────────
 
 def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
@@ -291,7 +352,7 @@ def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
     """Exporte la table vers un CSV (séparateur ;). Compat sqlite_db.
 
     since : date optionnelle (datetime.date). Si fournie, filtre les lignes dont
-            date_cmd (stockée en DD/MM/YYYY) est >= since.
+            date_cmd est >= since. Supporte les formats DD/MM/YYYY et YYYY-MM-DD.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ", ".join(f"`{h}`" for h in headers)
@@ -300,9 +361,15 @@ def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
     try:
         with conn_db.cursor() as cur:
             if since is not None:
+                # COALESCE : essaie DD/MM/YYYY, YYYY-MM-DD, puis DD-MM-YYYY
+                # (l'ancien format P1 utilisait des tirets au lieu de slashes)
                 cur.execute(
                     f"SELECT {cols} FROM `{table}`"
-                    " WHERE STR_TO_DATE(`date_cmd`, '%%d/%%m/%%Y') >= %s",
+                    " WHERE COALESCE("
+                    "   STR_TO_DATE(`date_cmd`, '%%d/%%m/%%Y'),"
+                    "   STR_TO_DATE(`date_cmd`, '%%Y-%%m-%%d'),"
+                    "   STR_TO_DATE(`date_cmd`, '%%d-%%m-%%Y')"
+                    " ) >= %s",
                     (since,),
                 )
             else:

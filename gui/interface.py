@@ -591,11 +591,9 @@ class ScraperApp(tk.Tk):
             messagebox.showerror("Erreur", "Veuillez d'abord choisir un site.")
             return
 
-        # Map GUI site name → sqlite_db site key
         _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians"}
         site_key = _SITE_KEYS.get(self._site, self._site.lower())
 
-        # Map action → (table suffix, CSV headers)
         _ACTION_INFO = {
             "produits":  ("products",  CSV_HEADERS),
             "commandes": ("orders",    ORDERS_CSV_HEADERS),
@@ -605,7 +603,7 @@ class ScraperApp(tk.Tk):
         from db.mariadb_db import SITE_PREFIX, export_table_to_csv
         table = f"{SITE_PREFIX[site_key]}_{table_suffix}"
 
-        # Option 7 jours — uniquement pour "suivi"
+        # Filtre 7 jours — uniquement pour "suivi"
         since = None
         if key == "suivi":
             panel = self._panels["suivi"]
@@ -613,13 +611,13 @@ class ScraperApp(tk.Tk):
                 from datetime import date, timedelta
                 since = date.today() - timedelta(days=7)
 
-        # Read rows from MariaDB and write to a temporary CSV
+        # Export depuis MariaDB vers un fichier temporaire
         try:
+            CSV_DIR.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 suffix=".csv", dir=str(CSV_DIR), delete=False
             ) as _tmp:
                 tmp_path = Path(_tmp.name)
-            CSV_DIR.mkdir(parents=True, exist_ok=True)
             n_rows = export_table_to_csv(None, table, headers, tmp_path, since=since)
         except Exception as exc:
             messagebox.showerror("Erreur base de données",
@@ -629,42 +627,16 @@ class ScraperApp(tk.Tk):
         if n_rows == 0:
             if tmp_path.exists():
                 tmp_path.unlink()
-            if since:
-                # Vérifie si la table contient des données (période quelconque)
-                try:
-                    total = export_table_to_csv(None, table, headers, tmp_path)
-                except Exception:
-                    total = 0
-                if tmp_path.exists():
-                    tmp_path.unlink()
-                if total > 0:
-                    # Des données existent mais pas sur les 7 derniers jours
-                    ans = messagebox.askyesno(
-                        "Aucune donnée sur 7 jours",
-                        f"Aucune donnée pour les 7 derniers jours dans {table}.\n\n"
-                        f"La table contient {total} ligne(s) au total.\n"
-                        "Voulez-vous télécharger toutes les données à la place ?",
-                    )
-                    if not ans:
-                        return
-                    # Relance sans filtre
-                    try:
-                        n_rows = export_table_to_csv(None, table, headers, tmp_path)
-                    except Exception as exc:
-                        messagebox.showerror("Erreur base de données",
-                                             f"Impossible de lire {table} :\n{exc}")
-                        return
-                    since = None  # nom de fichier sans suffixe _7j
-                else:
-                    messagebox.showinfo("Table vide",
-                                        f"Aucune donnée dans {table}.\n"
-                                        "Lancez d'abord le scraper pour peupler la base.")
-                    return
-            else:
-                messagebox.showinfo("Table vide",
-                                    f"Aucune donnée dans {table}.\n"
-                                    "Lancez d'abord le scraper pour peupler la base.")
-                return
+            messagebox.showinfo(
+                "Aucune donnée",
+                (
+                    f"Aucune donnée pour les 7 derniers jours dans {table}."
+                    if since else
+                    f"Aucune donnée dans {table}.\n"
+                    "Lancez d'abord le scraper pour peupler la base."
+                ),
+            )
+            return
 
         run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
         suffix = "_7j" if since else ""
