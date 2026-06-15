@@ -36,13 +36,13 @@ load_dotenv(_PROJECT_ROOT / ".env")
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
 try:
     from .scraper_legallais_orders import (
-        today, BASE_URL, NEXT_PAGE_BUTTON,
-        log_exception, get_url_cmd, check_date, get_Info,
+        BASE_URL, NEXT_PAGE_BUTTON,
+        log, log_exception, get_url_cmd, check_date, get_Info,
     )
 except ImportError:
     from scrapers.Legallais_P1.orders.scraper_legallais_orders import (  # type: ignore[no-redef]
-        today, BASE_URL, NEXT_PAGE_BUTTON,
-        log_exception, get_url_cmd, check_date, get_Info,
+        BASE_URL, NEXT_PAGE_BUTTON,
+        log, log_exception, get_url_cmd, check_date, get_Info,
     )
 
 from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_session_state
@@ -80,21 +80,21 @@ def _legallais_db():
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
-
+DATE_FORMAT = "%d/%m/%Y" 
 def main():
     # Saisie interactive de la plage [DateInf, DateSup] au format JJ/MM/AAAA
-    inputSup = input("Fournisser la date supérieur de l'intervalle de temps veuillez écrire une date au format d/m/yyyy ")
-    inputInf = input("Fournisser la date inférieur de l'intervalle de temps veuillez écrire une date au format d/m/yyyy ")
+    inputsup = input("Fournisser la date supérieur de l'intervalle de temps veuillez écrire une date au format d/m/yyyy ")
+    inputinf = input("Fournisser la date inférieur de l'intervalle de temps veuillez écrire une date au format d/m/yyyy ")
 
     try:
-        DateInf = datetime.strptime(inputInf, "%d/%m/%Y")
+        dateinf = datetime.strptime(inputinf, DATE_FORMAT)
     except Exception:
-        DateInf = datetime.today() - timedelta(days=3)
+        dateinf = datetime.today() - timedelta(days=3)
 
     try:
-        DateSup = datetime.strptime(inputSup, "%d/%m/%Y")
+        datesup = datetime.strptime(inputsup, DATE_FORMAT)
     except Exception:
-        DateSup = datetime.today()
+        datesup = datetime.today()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -106,16 +106,16 @@ def main():
         page.set_viewport_size({"width": 1920, "height": 1080})
 
         if not ensure_logged_in(page, context, LEGALLAIS_EMAIL, LEGALLAIS_PASSWORD):
-            print("Impossible de se connecter à Legallais.")
+            log.error("Impossible de se connecter à Legallais.")
             browser.close()
             return
 
         page.goto(BASE_URL + "/user/order")
         page.wait_for_load_state("domcontentloaded")
 
-        Url_cmd = []
+        url_cmd = []
         # Phase 1 : avancer dans les pages jusqu'à atteindre DateSup (borne haute)
-        check_time_sup = check_date(page, DateSup)
+        check_time_sup = check_date(page, datesup)
         while not check_time_sup:
             try:
                 old_first_row = page.locator("tbody tr").first
@@ -128,22 +128,22 @@ def main():
                     }""",
                     arg=old_text
                 )
-                check_time_sup = check_date(page, DateSup)
+                check_time_sup = check_date(page, datesup)
             except Exception as e:
-                log_exception(today, e, "érreur de bouclage pour le tab commandes")
+                log_exception(log, e, "érreur de bouclage pour le tab commandes")
                 break
 
         for cmd in get_url_cmd(page):
             try:
-                row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
+                row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
             except Exception:
-                Url_cmd.append(cmd)
+                url_cmd.append(cmd)
                 continue
-            if DateInf <= row_date <= DateSup:
-                Url_cmd.append(cmd)
+            if dateinf <= row_date <= datesup:
+                url_cmd.append(cmd)
 
-        # Phase 2 : continuer à paginer et collecter tant qu'on n'a pas dépassé DateInf
-        check_time_inf = check_date(page, DateInf)
+        # Phase 2 : continuer à paginer et collecter tant qu'on n'a pas dépassé dateinf
+        check_time_inf = check_date(page, dateinf)
         while not check_time_inf:
             try:
                 old_first_row = page.locator("tbody tr").first
@@ -158,31 +158,31 @@ def main():
                 )
                 for cmd in get_url_cmd(page):
                     try:
-                        row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
+                        row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
                     except Exception:
-                        Url_cmd.append(cmd)
+                        url_cmd.append(cmd)
                         continue
-                    if DateInf <= row_date <= DateSup:
-                        Url_cmd.append(cmd)
-                check_time_inf = check_date(page, DateInf)
+                    if dateinf <= row_date <= datesup:
+                        url_cmd.append(cmd)
+                check_time_inf = check_date(page, dateinf)
             except Exception as e:
-                log_exception(today, e, "érreur de bouclage pour le tab commandes")
+                log_exception(log, e, "érreur de bouclage pour le tab commandes")
                 break
 
-        print(f"{len(Url_cmd)} de commande")
+        log.info(f"{len(url_cmd)} commande(s) à traiter")
 
-        for cmd in Url_cmd:
+        for cmd in url_cmd:
             try:
                 page.goto(BASE_URL + cmd['link'])
                 page.wait_for_load_state("domcontentloaded")
-                Commande = get_Info(page, cmd)
-                print(Commande)
-                persist_order(Commande)
+                commande = get_Info(page, cmd)
+                log.debug(f"Commande extraite : {commande}")
+                persist_order(commande)
             except Exception as e:
-                log_exception(today, e, f"érreur page {cmd['link']}")
+                log_exception(log, e, f"érreur page {cmd['link']}")
 
-        if Url_cmd:
-            print(Url_cmd[-1])
+        if url_cmd:
+            log.debug(f"Dernière commande : {url_cmd[-1]}")
 
         browser.close()
 

@@ -23,9 +23,10 @@ def setup_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
 
-    # Un fichier par jour : log/scraper-2026-06-05.log
+    # Un fichier par site par jour : log/legallais-2026-06-15.log
+    site = name.split(".")[0]
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / f"scraper-{datetime.today().strftime('%Y-%m-%d')}.log"
+    log_file = LOG_DIR / f"{site}-{datetime.today().strftime('%Y-%m-%d')}.log"
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
 

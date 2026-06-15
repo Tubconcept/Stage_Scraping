@@ -45,16 +45,16 @@ SITE_PREFIX: dict[str, str] = {
 # ─── Paramètres de connexion ──────────────────────────────────────────────────
 
 def _conn_params() -> dict:
-    return dict(
-        host=os.getenv("DB_HOST"),
-        port=int(os.getenv("DB_PORT", 3306)),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        database=os.getenv("DB_NAME"),
-        charset="utf8mb4",
-        connect_timeout=10,
-        autocommit=False,
-    )
+    return {
+        'host': os.getenv("DB_HOST"),
+        'port': int(os.getenv("DB_PORT", 3306)),
+        'user': os.getenv("DB_USER"),
+        'password': os.getenv("DB_PASSWORD"),
+        'database': os.getenv("DB_NAME"),
+        'charset': "utf8mb4",
+        'connect_timeout': 10,
+        'autocommit': False,
+    }
 
 
 def _get_conn() -> pymysql.connections.Connection:
@@ -80,7 +80,7 @@ class _ConnSentinel:
     `.close()` → no-op.
     """
     def close(self) -> None:
-        pass
+        pass  # comment explaining why the method is empty
 
     def __bool__(self) -> bool:
         return True
@@ -175,7 +175,7 @@ def _insert(
         conn.commit()
     except pymysql.Error as e:
         conn.rollback()
-        _log.error("_insert(%s, %s) échec : %s | row=%s", site, kind, e,
+        _log.exception("_insert(%s, %s) échec : %s | row=%s", site, kind, e,
                    row.get("id_cmd") or row.get("product_fournisseur_url", "?"))
         raise
     finally:
@@ -240,7 +240,7 @@ def upsert_product(_conn, site: str, row: dict) -> None:
         conn.commit()
     except pymysql.Error as e:
         conn.rollback()
-        _log.error("upsert_product(%s) échec : %s | ref=%s", site, e, where_val)
+        _log.exception("upsert_product(%s) échec : %s | ref=%s", site, e, where_val)
         raise
     finally:
         conn.close()
@@ -284,7 +284,7 @@ def get_scraped_product_urls(_conn, site: str) -> set[str]:
             cur.execute(f"SELECT `product_fournisseur_url` FROM `{table}`")
             return {r[0] for r in cur.fetchall() if r[0]}
     except pymysql.Error as e:
-        _log.error("get_scraped_product_urls(%s) échec : %s", site, e)
+        _log.exception("get_scraped_product_urls(%s) échec : %s", site, e)
         return set()
     finally:
         conn_db.close()
@@ -376,7 +376,7 @@ def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
                 cur.execute(f"SELECT {cols} FROM `{table}`")
             rows = cur.fetchall()
     except pymysql.Error as e:
-        _log.error("export_table_to_csv(%s) échec : %s", table, e)
+        _log.exception("export_table_to_csv(%s) échec : %s", table, e)
         raise
     finally:
         conn_db.close()

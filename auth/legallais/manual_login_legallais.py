@@ -69,11 +69,12 @@ def _do_login(driver: Driver, _data=None):
         }
     """)
 
+    LEGALLAIS = ".legallais.com" ;
     # Injecter les cookies de consentement pour ne plus voir le bandeau
     driver.add_cookies([
-        {"name": "CookiesConsent_ads", "value": "true", "domain": ".legallais.com", "path": "/"},
-        {"name": "CookiesConsent_individualCustomization", "value": "true", "domain": ".legallais.com", "path": "/"},
-        {"name": "CookiesConsent_required", "value": "1", "domain": ".legallais.com", "path": "/"},
+        {"name": "CookiesConsent_ads", "value": "true", "domain": LEGALLAIS, "path": "/"},
+        {"name": "CookiesConsent_individualCustomization", "value": "true", "domain": LEGALLAIS, "path": "/"},
+        {"name": "CookiesConsent_required", "value": "1", "domain": LEGALLAIS, "path": "/"},
     ])
 
     driver.wait_for_element(SEL_EMAIL, 15)
@@ -91,7 +92,7 @@ def _do_login(driver: Driver, _data=None):
         if "connection" not in current_url:
             print("Login Legallais réussi")
             _save_session_from_driver(driver)
-            print(f"\nSession prête — tous les scrapers Legallais peuvent l'utiliser.")
+            print("\nSession prête — tous les scrapers Legallais peuvent l'utiliser.")
             break
     else:
         print("Échec du login — le site n'a pas redirigé après connexion.")

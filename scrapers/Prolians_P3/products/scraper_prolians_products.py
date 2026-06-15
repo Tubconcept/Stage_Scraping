@@ -23,8 +23,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from css_selectors.prolians import Selectors
 from core.config import CSV_HEADERS
+from core.logger import setup_logger
 
-today         = datetime.today().strftime("%Y-%m-%d")
+log   = setup_logger("prolians.products")
+today = datetime.today().strftime("%Y-%m-%d")
 BASE_URL      = Selectors.BASE_URL
 SITEMAP_INDEX = Selectors.SITEMAP_INDEX
 
@@ -45,7 +47,7 @@ def extract_sitemap_urls(session, url):
     r = session.get(url)
     r.raise_for_status()
     root = ET.fromstring(r.content)
-    ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    ns = {"ns": "https://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = []
 
     if root.tag.endswith("sitemapindex"):
@@ -84,7 +86,7 @@ def _read_refs_and_price(page):
                 continue
 
         # Parse les références
-        m = re.search(r"Code P\s*[: ]\s*(\S+)", full_text)
+        m = re.search(r"Code P[ :][ :]{0,2}(\S+)", full_text)
         if m:
             code_p = m.group(1)
         m = re.search(r"Réf\.\s*fabricant\s*[: ]\s*(\S+)", full_text)
@@ -193,15 +195,12 @@ def _extract_declinaisons(page, radios):
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            print(f"    Déclinaison {i+1} — erreur clic : {e}")
+            log.warning(f"Déclinaison {i+1} — erreur clic : {e}")
             continue
 
         code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction = _read_refs_and_price(page)
 
-        print(f"    [{i+1}] {full_label}")
-        print(f"          Code P         : {code_p or '—'}")
-        print(f"          Réf. fabricant : {ref_fab or '—'}")
-        print(f"          Prix           : {price or '—'} €")
+        log.debug(f"[{i+1}] {full_label} | Code P: {code_p or '—'} | Réf. fab: {ref_fab or '—'} | Prix: {price or '—'} €")
 
         declinaisons.append({
             "label":        full_label,
@@ -229,7 +228,8 @@ def extract_product_from_dom(page):
     Retourne une liste de dicts (une entrée par déclinaison) ou ``None`` si la
     fiche est illisible (sélecteur références absent).
     """
-    data = {k: "" for k in FIELDNAMES}
+    data = dict.fromkeys(FIELDNAMES, "")
+   
 
     # --------------- FOURNISSEUR (identifiant interne Tubconcept)
     data["product_fournisseur"] = "P3"
@@ -238,7 +238,7 @@ def extract_product_from_dom(page):
     try:
         page.wait_for_selector(Selectors.inline_list_item, timeout=5000)
     except:
-        print("Pas trouvé, continuer")
+        log.warning("Sélecteur refs introuvable — produit ignoré")
         return None
 
     code_p_init, ref_fab_init, ref_prolians_init, price_init, stock_init, ean_init, eco_tax_init, reduction_init = _read_refs_and_price(page)

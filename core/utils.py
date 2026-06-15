@@ -93,7 +93,7 @@ def safe_get_text_bot(element, wait: int = 1) -> str:
         return ""
 
 
-def safe_get_attribute_bot(element, attribute: str, wait: int = 1) -> str:
+def safe_get_attribute_bot(element, attribute: str) -> str:
     """Extrait un attribut HTML depuis un élément Botasaurus."""
     try:
         return element.get_attribute(attribute) or ""
