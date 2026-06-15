@@ -116,7 +116,7 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
         page.goto(BASE_URL + "/user/order")
         page.wait_for_load_state("domcontentloaded")
 
-        Url_cmd = []
+        url_cmd = []
         try:
             while not check_date(page, date_to):
                 old_text = page.locator("tbody tr").first.inner_text()
@@ -132,10 +132,10 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
             try:
                 row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
             except Exception:
-                Url_cmd.append(cmd)
+                url_cmd.append(cmd)
                 continue
             if date_from <= row_date <= date_to:
-                Url_cmd.append(cmd)
+                url_cmd.append(cmd)
 
         try:
             while not check_date(page, date_from):
@@ -149,14 +149,14 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
                     try:
                         row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
                     except Exception:
-                        Url_cmd.append(cmd)
+                        url_cmd.append(cmd)
                         continue
                     if date_from <= row_date <= date_to:
-                        Url_cmd.append(cmd)
+                        url_cmd.append(cmd)
         except Exception as e:
             log_exception(today_str, e, "pagination date début")
 
-        for cmd in Url_cmd:
+        for cmd in url_cmd:
             if should_stop and should_stop():
                 break
             try:

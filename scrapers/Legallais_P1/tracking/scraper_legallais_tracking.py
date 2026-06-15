@@ -21,8 +21,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import re
 import html
-import os
-import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -30,8 +28,11 @@ from typing import Optional, List
 from botasaurus.browser import Driver
 from dotenv import load_dotenv
 
+from core.logger import setup_logger, log_exception
+
 load_dotenv()
 
+log   = setup_logger("legallais.tracking")
 today = datetime.today().strftime('%Y-%m-%d')
 week  = datetime.today() - timedelta(days=7)
 
@@ -113,29 +114,6 @@ def nettoyer_weight(val):
         return ""
 
 
-# ─── Log ──────────────────────────────────────────────────────────────────────
-
-def log_exception(today, e, commentaire=""):
-    ignorer = [
-        "Target page, context or browser has been closed",
-        "Browser has been closed",
-        "TargetClosedError"
-    ]
-    if any(msg in str(e) for msg in ignorer):
-        return
-    os.makedirs("log", exist_ok=True)
-    with open(f"log/logException-{today}-Back.txt", "a", encoding="utf-8") as f:
-        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-        f.write(f"{timestamp} {type(e).__name__}: {str(e)}\n")
-        tb = traceback.extract_tb(e.__traceback__)
-        for frame in tb:
-            f.write(f"  File \"{frame.filename}\", line {frame.lineno}, in {frame.name}\n")
-            f.write(f"    {frame.line}\n")
-        if commentaire:
-            f.write(f"Commentaire: {commentaire}\n")
-        f.write("\n")
-
-
 # ─── Helpers navigation ───────────────────────────────────────────────────────
 
 def _wait_for(driver: Driver, css: str, timeout: int = WAIT) -> bool:
@@ -152,7 +130,7 @@ def _click_if_present(driver: Driver, css: str) -> bool:
 
 
 # ─── Authentification ─────────────────────────────────────────────────────────
-
+URL_SITE = "https://www.legallais.com" 
 def connexion(driver: Driver, email: str, password: str) -> None:
     assert email and password, "Renseignez LEGALLAIS_EMAIL et LEGALLAIS_PASSWORD"
     from auth.legallais.cookie_manager_legallais import (
@@ -161,9 +139,9 @@ def connexion(driver: Driver, email: str, password: str) -> None:
 
     # Cookies de consentement (toujours injectés)
     driver.add_cookies([
-        {"name": "CookiesConsent_ads",                     "value": "true", "url": "https://www.legallais.com"},
-        {"name": "CookiesConsent_individualCustomization", "value": "true", "url": "https://www.legallais.com"},
-        {"name": "CookiesConsent_required",                "value": "1",    "url": "https://www.legallais.com"},
+        {"name": "CookiesConsent_ads",                     "value": "true", "url": URL_SITE},
+        {"name": "CookiesConsent_individualCustomization", "value": "true", "url": URL_SITE},
+        {"name": "CookiesConsent_required",                "value": "1",    "url": URL_SITE},
     ])
 
     # Tenter de restaurer la session du jour
@@ -171,12 +149,12 @@ def connexion(driver: Driver, email: str, password: str) -> None:
         driver.get(BASE_URL)
         _wait_for(driver, BREADCRUMB, timeout=5)
         if not driver.is_element_present(EMAIL_INPUT):
-            print("[Legallais] Session restaurée — connexion ignorée.")
+            log.info("Session restaurée — connexion ignorée.")
             return
-        print("[Legallais] Session expirée — nouvelle connexion en cours...")
+        log.info("Session expirée — nouvelle connexion en cours...")
 
     # Login complet
-    print("[Legallais] Connexion en cours...")
+    log.info("Connexion en cours...")
     driver.get(LOGIN_URL)
     _wait_for(driver, EMAIL_INPUT)
     driver.type(EMAIL_INPUT, email)
@@ -192,10 +170,10 @@ def connexion(driver: Driver, email: str, password: str) -> None:
 
 def check_date(driver: Driver):
     """Retourne True quand la dernière commande visible est antérieure à la fenêtre (7 j)."""
-    print(len(driver.select_all(ORDER_DATE_CELL)))
-    Date_str = driver.select_all(ORDER_DATE_CELL)[-1].text
-    Date = datetime.strptime(Date_str, "%d/%m/%Y")
-    return Date <= week
+    log.debug(f"Nombre de lignes de date : {len(driver.select_all(ORDER_DATE_CELL))}")
+    date_str = driver.select_all(ORDER_DATE_CELL)[-1].text
+    date = datetime.strptime(date_str, "%d/%m/%Y")
+    return date <= week
 
 
 def get_url_cmd(driver: Driver):
@@ -206,19 +184,17 @@ def get_url_cmd(driver: Driver):
                 ref: tr.querySelector('td[data-label="Référence"]')?.innerText.trim()
             }));
     """)
-    return cmd_link  # noqa: F811  (dead code conservé depuis tracking.py)
-
 
 # ─── Extraction reliquat ──────────────────────────────────────────────────────
 
-def getDateReliquat(driver: Driver, statut: str):
+def get_date_reliquat(driver: Driver, statut: str):
     if statut.upper() == "RELIQUAT EN ATTENTE":
         produit_block = driver.select(RELIQUAT_PRODUCT_BLOCK, 1)
         url_produit = produit_block.select(RELIQUAT_PRODUCT_LINK, 1).get_attribute("href")
         ref_text = produit_block.select("div.order-details__parcel-designation-ref", 1).text
         ref_match = re.search(r"Réf\s*:\s*(\d+)", ref_text)
         ref_produit = ref_match.group(1) if ref_match else None
-        print(f"Produit en reliquat détecté : {ref_produit} ({url_produit})")
+        log.debug(f"Produit en reliquat détecté : {ref_produit} ({url_produit})")
         try:
             new_page = driver.open_link_in_new_tab(url_produit)
             new_page.activate()
@@ -226,37 +202,37 @@ def getDateReliquat(driver: Driver, statut: str):
                 stock_label = driver.select(RELIQUAT_STOCK_LABEL, 1).text
                 dispo_match = re.search(r"Disponible\s+à\s+partir\s+du\s+(\d{2}/\d{2}/\d{4})", stock_label)
                 date_dispo = dispo_match.group(1) if dispo_match else "Date non trouvée"
-            except:
+            except Exception:
                 date_dispo = "Date non trouvée ou produit non disponible"
             new_page.close()
             return date_dispo
-        except:
+        except Exception:
             new_page.close()
             return None
     else:
         return None
 
 
-def multipliProduct(driver: Driver):
+def multipli_product(driver: Driver):
     try:
         items = driver.select(MULTI_PRODUCT_CONTAINER, 1).select(MULTI_PRODUCT_ITEM, 1)
     except Exception as e:
-        log_exception(today, e, "Erreur de multiproduct")
+        log_exception(log, e, "Erreur de multiproduct")
         items = False
     return items
 
 
 # ─── Extraction d'une commande ────────────────────────────────────────────────
 
-def get_Info(driver: Driver, cmd):
+def get_info(driver: Driver, cmd):
     try:
         ref_p1  = cmd['link'].split("/")[-1]
         ref_cmd = cmd['ref']
     except Exception as e:
-        log_exception(today, e, "Référencé Erreur")
+        log_exception(log, e, "Référencé Erreur")
         ref_p1  = ""
         ref_cmd = ""
-    print(ref_cmd)
+    log.debug(f"ref_cmd : {ref_cmd}")
     try:
         try:
             header   = driver.select_all(ORDER_HEADER_LINES, 0)
@@ -266,42 +242,41 @@ def get_Info(driver: Driver, cmd):
         m = re.search(r"\d{2}/\d{2}/\d{4}", date_raw)
         date_cmd = m.group(0) if m else nettoyer_texte(date_raw)
     except Exception as e:
-        log_exception(today, e, "Erreur de date" + ref_cmd)
-    print(date_cmd)
+        log_exception(log, e, "Erreur de date" + ref_cmd)
+    log.debug(f"date_cmd : {date_cmd}")
     try:
-        titrePrdt = nettoyer_texte(
+        titre_prdt = nettoyer_texte(
             driver.select(PRODUCT_LINK, 0).text.replace(',', ".").replace(";", ".").replace(":", "-")
         )
     except Exception as e:
-        log_exception(today, e, "Erreur de Titre " + ref_cmd)
+        log_exception(log, e, "Erreur de Titre " + ref_cmd)
     try:
         ref_text  = driver.select(PRODUCT_REFERENCE, 0).text
         prdt_qty  = driver.select(PRODUCT_QUANTITY, 0).text
         ref_match = re.search(r"Réf\s*:\s*(\d+)", ref_text)
         ref_produit = ref_match.group(1) if ref_match else None
-        prdt_data   = f"{ref_produit or ''}:{titrePrdt}:{prdt_qty.strip()}"
+        prdt_data   = f"{ref_produit or ''}:{titre_prdt}:{prdt_qty.strip()}"
     except Exception as e:
-        log_exception(today, e, "Erreur de Produits " + ref_cmd)
+        log_exception(log, e, "Erreur de Produits " + ref_cmd)
         prdt_data = ""
-    print(prdt_data)
+    log.debug(f"prdt_data : {prdt_data}")
     try:
         statut = nettoyer_texte(driver.select(ORDER_STATUS, 0).text)
     except Exception as e:
-        log_exception(today, e, "Erreur de Statuts " + ref_cmd)
+        log_exception(log, e, "Erreur de Statuts " + ref_cmd)
         statut = None
-    print(statut)
+    log.debug(f"statut : {statut}")
     try:
-        dateReliquat = getDateReliquat(driver, statut)
+        date_reliquat = get_date_reliquat(driver, statut)
     except Exception as e:
-        log_exception(today, e, "Erreur de Reliquat " + ref_cmd)
-        dateReliquat = None
-    print(dateReliquat)
+        log_exception(log, e, "Erreur de Reliquat " + ref_cmd)
+        date_reliquat = None
+    log.debug(f"date_reliquat : {date_reliquat}")
 
     transporteur  = None
     suivi         = None
     numero_suivi  = None
     weight        = None
-    ismultiProduit = multipliProduct(driver)
 
     # Ouverture de la modale de suivi colis si le bouton est présent sur la page
     if driver.is_element_present(TRACKING_MODAL_BUTTON, 1):
@@ -309,18 +284,18 @@ def get_Info(driver: Driver, cmd):
             driver.get_element_containing_text('Suivi du colis').click()
             _wait_for(driver, TRACKING_MODAL, timeout=1)
             modal        = driver.select(TRACKING_MODAL, 0)
-            dataTracking = modal.select_all(TRACKING_TABLE_CELLS, 0)
-            transporteur = nettoyer_texte(dataTracking[1].text)
+            data_tracking = modal.select_all(TRACKING_TABLE_CELLS, 0)
+            transporteur = nettoyer_texte(data_tracking[1].text)
             # Extraction du poids avec unité (ex: "3.6 kg"), indépendant du type de commande
             weight = None
-            if len(dataTracking) > 3:
-                raw_w = " ".join(dataTracking[3].text.split())
+            if len(data_tracking) > 3:
+                raw_w = " ".join(data_tracking[3].text.split())
                 m_w = re.search(r"(\d+[.,]\d+|\d+)\s*kg", raw_w, re.IGNORECASE)
                 weight = f"{m_w.group(1).replace(',', '.')} kg" if m_w else None
-            link_locator = dataTracking[0].select(TRACKING_LINK, 0)
+            link_locator = data_tracking[0].select(TRACKING_LINK, 0)
             if link_locator:
                 suivi = link_locator.get_attribute("href")
-                print(suivi)
+                log.debug(f"suivi : {suivi}")
             else:
                 suivi = None
 
@@ -333,7 +308,7 @@ def get_Info(driver: Driver, cmd):
                         numero_suivi = match.group(1)
                 elif "tnt" in suivi:
                     match = re.search(r"bonTransport=(\d+)", suivi)
-                    print(match, "tnt")
+                    log.debug(f"match TNT : {match}")
                     if match:
                         numero_suivi = match.group(1)
                     transporteur = "TNT"
@@ -350,9 +325,9 @@ def get_Info(driver: Driver, cmd):
                         numero_suivi = match.group(1)
                         suivi = "https://www.traplus.com/twt/cgi-bin/rapacc.pgm?LIEU=VALOT&CACCR=SVPLEGALLAIS&REFE=" + numero_suivi
                 else:
-                    print(f"Lien de suivi inconnu ou nouveau format : {suivi}")
+                    log.warning(f"Lien de suivi inconnu ou nouveau format : {suivi}")
         except Exception as e:
-            log_exception(today, e, "erreur Modal" + ref_cmd)
+            log_exception(log, e, "erreur Modal" + ref_cmd)
 
     return {
         "ref_p1":       ref_p1,
@@ -360,7 +335,7 @@ def get_Info(driver: Driver, cmd):
         "date_cmd":     date_cmd,
         "suivi":        suivi,
         "statut":       statut,
-        "dateReliquat": dateReliquat,
+        "dateReliquat": date_reliquat,
         "transproteur": transporteur,
         "numero_suivi": numero_suivi,
         "weight":       weight,

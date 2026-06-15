@@ -35,7 +35,8 @@ from typing import List, Dict, Optional
 from botasaurus.browser import browser, Driver
 from core.config import JSON_DIR, CSV_HEADERS
 from css_selectors.legallais import BASE_URL, SELECTORS, CATEGORY_NAMES
-from core.utils import logger
+from core.logger import setup_logger
+log = setup_logger("legallais.products")
 from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
 
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
@@ -151,22 +152,22 @@ def _collect_browse(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
 
     categories = scraper.get_categories(category_filter)
     if not categories:
-        logger.warning("Aucune catégorie trouvée")
+        log.warning("Aucune catégorie trouvée")
         return []
 
     categories = [c for c in categories if "guides-de-choix" not in c]
-    logger.info(f"Collecte de {len(categories)} catégories")
+    log.info(f"Collecte de {len(categories)} catégories")
     all_products: List[Dict] = []
 
     for idx, category_url in enumerate(categories, 1):
-        logger.info(f"[{idx}/{len(categories)}] Catégorie: {category_url}")
+        log.info(f"[{idx}/{len(categories)}] Catégorie: {category_url}")
         try:
             driver.get(_to_full_url(category_url))
             scraper.set_items_per_page()
 
             cat1, cat2, cat3 = scraper.get_breadcrumb_categories()
             total_pages = scraper.get_page_count()
-            logger.info(f"  {total_pages} page(s) dans cette catégorie")
+            log.info(f"  {total_pages} page(s) dans cette catégorie")
 
             for page_num in range(1, total_pages + 1):
                 if page_num > 1:
@@ -179,11 +180,11 @@ def _collect_browse(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
                         "cat3": cat3,
                     })
 
-            logger.info(f"  Total cumulé: {len(all_products)} produits")
+            log.info(f"  Total cumulé: {len(all_products)} produits")
         except Exception as e:
-            logger.error(f"Erreur collecte catégorie {category_url}: {e}")
+            log.error(f"Erreur collecte catégorie {category_url}: {e}")
 
-    logger.info(f"Phase 1 terminée — {len(all_products)} produits collectés")
+    log.info(f"Phase 1 terminée — {len(all_products)} produits collectés")
     return all_products
 
 
@@ -204,7 +205,7 @@ def _collect_search(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
     all_products: List[Dict] = []
 
     for idx, ref in enumerate(product_refs, 1):
-        logger.info(f"[{idx}/{len(product_refs)}] Recherche: {ref}")
+        log.info(f"[{idx}/{len(product_refs)}] Recherche: {ref}")
         try:
             driver.wait_for_element(SELECTORS["search_input"], 1)
             driver.clear(SELECTORS["search_input"], 1)
@@ -213,11 +214,11 @@ def _collect_search(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
             try:
                 driver.wait_for_element(SELECTORS["search_result"], 1)
             except Exception:
-                logger.error(f"Aucun résultat pour la ref: {ref}")
+                log.error(f"Aucun résultat pour la ref: {ref}")
                 continue
 
             if not driver.is_element_present(SELECTORS["search_result"]):
-                logger.warning(f"Résultat absent pour: {ref}")
+                log.warning(f"Résultat absent pour: {ref}")
                 continue
 
             results = driver.select_all(SELECTORS["search_result"])
@@ -232,14 +233,14 @@ def _collect_search(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
 
             if product_url:
                 all_products.append({"url": product_url, "cat1": "", "cat2": "", "cat3": ""})
-                logger.info(f"  URL collectée: {product_url}")
+                log.info(f"  URL collectée: {product_url}")
             else:
-                logger.warning(f"Référence exacte non trouvée: {ref}")
+                log.warning(f"Référence exacte non trouvée: {ref}")
 
         except Exception as e:
-            logger.error(f"Erreur recherche {ref}: {e}")
+            log.error(f"Erreur recherche {ref}: {e}")
 
-    logger.info(f"Phase 1 terminée — {len(all_products)} produits collectés")
+    log.info(f"Phase 1 terminée — {len(all_products)} produits collectés")
     return all_products
 
 
@@ -261,9 +262,9 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
     try:
         db_conn = init_site_db("legallais")
     except Exception as _exc:
-        logger.warning(f"[Worker {batch_id}] MariaDB non initialisée : {_exc}")
+        log.warning(f"[Worker {batch_id}] MariaDB non initialisée : {_exc}")
 
-    logger.info(f"[Worker {batch_id}] Démarrage — {len(products)} produits à traiter")
+    log.info(f"[Worker {batch_id}] Démarrage — {len(products)} produits à traiter")
     ok, err = 0, 0
 
     for item in products:
@@ -291,20 +292,20 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
                             mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
                             insert_product(db_conn, "legallais", mapped)
                         except Exception as _db_exc:
-                            logger.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
+                            log.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
                 ok += 1
-                logger.info(f"[Worker {batch_id}] ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
+                log.info(f"[Worker {batch_id}] ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
             else:
-                logger.warning(f"[Worker {batch_id}] ✗ Aucune donnée pour {item['url']}")
+                log.warning(f"[Worker {batch_id}] ✗ Aucune donnée pour {item['url']}")
                 err += 1
         except Exception as e:
-            logger.error(f"[Worker {batch_id}] Erreur {item['url']}: {e}")
+            log.error(f"[Worker {batch_id}] Erreur {item['url']}: {e}")
             err += 1
 
     if db_conn:
         db_conn.close()
 
-    logger.info(f"[Worker {batch_id}] Terminé — {ok} OK, {err} erreurs")
+    log.info(f"[Worker {batch_id}] Terminé — {ok} OK, {err} erreurs")
 
 
 # ─── SCRAPING SÉQUENTIEL ──────────────────────────────────────────────────────
@@ -326,7 +327,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
     try:
         db_conn = init_site_db("legallais")
     except Exception as _exc:
-        logger.warning(f"Base MariaDB Legallais non initialisée : {_exc}")
+        log.warning(f"Base MariaDB Legallais non initialisée : {_exc}")
 
     if mode == "browse":
         driver.get(BASE_URL)
@@ -335,7 +336,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
         driver.click("#products-navbar-button")
         categories = scraper.get_categories(category_filter)
         categories = [c for c in categories if "guides-de-choix" not in c]
-        logger.info(f"{len(categories)} catégories trouvées")
+        log.info(f"{len(categories)} catégories trouvées")
 
         ok, err = 0, 0
         # Seed visited_urls from DB for crash-safe resume
@@ -343,7 +344,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
             get_scraped_product_urls(db_conn, "legallais") if db_conn else set()
         )
         if visited_urls:
-            logger.info(f"Reprise — {len(visited_urls)} URL(s) déjà scrappée(s) ignorées")
+            log.info(f"Reprise — {len(visited_urls)} URL(s) déjà scrappée(s) ignorées")
 
         for idx, cat_url in enumerate(categories, 1):
             if _stop_flag:
@@ -358,14 +359,14 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                 except Exception:
                     pass
                 cat1, cat2, cat3 = scraper.get_breadcrumb_categories()
-                logger.info(f"  Breadcrumb : {cat1} > {cat2} > {cat3}")
+                log.info(f"  Breadcrumb : {cat1} > {cat2} > {cat3}")
                 try:
                     driver.wait_for_element(SELECTORS["product_card"], 3)
                 except Exception:
                     pass
 
                 total_pages = scraper.get_page_count()
-                logger.info(
+                log.info(
                     f"[{idx}/{len(categories)}] {cat1} > {cat2} > {cat3}"
                     f" — {total_pages} page(s)"
                 )
@@ -385,7 +386,7 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                                 continue
                             visited_urls.add(full_href)
 
-                            logger.info(f"  → Produit {ok + err + 1} : {full_href}")
+                            log.info(f"  → Produit {ok + err + 1} : {full_href}")
                             driver.get(full_href)
                             rows = scraper.scrape_product()
                             if rows and rows[0].get("isCombination") == "True":
@@ -407,34 +408,34 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                                             mapped["product_fournisseur_url"] = _variant_url(full_href, variant_ref)
                                             insert_product(db_conn, "legallais", mapped)
                                         except Exception as _db_exc:
-                                            logger.debug(f"MariaDB produit ignoré : {_db_exc}")
+                                            log.debug(f"MariaDB produit ignoré : {_db_exc}")
                                 ok += 1
                                 ref = rows[0].get("productRef", "?")
-                                logger.info(f"  ✓ [{ok}] {ref} — {len(rows)} ligne(s) écrite(s)")
+                                log.info(f"  ✓ [{ok}] {ref} — {len(rows)} ligne(s) écrite(s)")
                             else:
                                 err += 1
-                                logger.warning(f"  ✗ Aucune donnée : {full_href}")
+                                log.warning(f"  ✗ Aucune donnée : {full_href}")
 
                         except Exception as ex:
                             if _session_perdue(ex):
-                                logger.error(
+                                log.error(
                                     f"Session perdue — {ok} produits sauvegardés en MariaDB"
                                 )
                                 if db_conn:
                                     db_conn.close()
                                 return
-                            logger.error(f"Erreur produit {href}: {ex}")
+                            log.error(f"Erreur produit {href}: {ex}")
                             err += 1
 
             except Exception as ex:
                 if _session_perdue(ex):
-                    logger.error(f"Session perdue — {ok} produits sauvegardés en MariaDB")
+                    log.error(f"Session perdue — {ok} produits sauvegardés en MariaDB")
                     if db_conn:
                         db_conn.close()
                     return
-                logger.error(f"Erreur catégorie {cat_url}: {ex}")
+                log.error(f"Erreur catégorie {cat_url}: {ex}")
 
-        logger.info(f"Terminé — {ok} produits écrits, {err} erreurs")
+        log.info(f"Terminé — {ok} produits écrits, {err} erreurs")
         if db_conn:
             db_conn.close()
 
@@ -462,17 +463,17 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
                                 mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
                                 insert_product(db_conn, "legallais", mapped)
                             except Exception as _db_exc:
-                                logger.debug(f"MariaDB produit ignoré : {_db_exc}")
-                    logger.info(f"  ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
+                                log.debug(f"MariaDB produit ignoré : {_db_exc}")
+                    log.info(f"  ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
                 else:
-                    logger.warning(f"  ✗ Aucune donnée pour {item.get('url','')}")
+                    log.warning(f"  ✗ Aucune donnée pour {item.get('url','')}")
             except Exception as ex:
                 if _session_perdue(ex):
-                    logger.error("Session perdue — arrêt du mode search")
+                    log.error("Session perdue — arrêt du mode search")
                     if db_conn:
                         db_conn.close()
                     return
-                logger.error(f"Erreur {item.get('url','')}: {ex}")
+                log.error(f"Erreur {item.get('url','')}: {ex}")
         if db_conn:
             db_conn.close()
 
@@ -513,7 +514,7 @@ Exemples:
                 pass
             print(f"  → Entrez un numéro entre 1 et {len(CATEGORY_NAMES) + 1}")
 
-    logger.info(f"Mode: {args.mode} | Catégorie: {args.category or 'toutes'} | Destination: SQLite legallais.db")
+    log.info(f"Mode: {args.mode} | Catégorie: {args.category or 'toutes'} | Destination: SQLite legallais.db")
 
     if args.mode == "browse":
         _scrape_direct({  # type: ignore[call-arg]
@@ -522,22 +523,22 @@ Exemples:
             "category_filter": args.category,
         })
     else:
-        logger.info("=== Collecte des URLs produits (mode search) ===")
+        log.info("=== Collecte des URLs produits (mode search) ===")
         products = _collect_search({"json_file": args.file})  # type: ignore[call-arg]
         if not products:
-            logger.error("Aucun produit collecté. Abandon.")
+            log.error("Aucun produit collecté. Abandon.")
             return
-        logger.info(f"=== Scraping de {len(products)} produits ===")
+        log.info(f"=== Scraping de {len(products)} produits ===")
         _scrape_direct({  # type: ignore[call-arg]
             "products": products,
             "mode": "search",
         })
 
-    logger.info("Scraping terminé — résultat en MariaDB")
+    log.info("Scraping terminé — résultat en MariaDB")
 
 
 def run_interactive():
-    logger.info("Démarrage scraping produits (browse) → MariaDB legallais.db")
+    log.info("Démarrage scraping produits (browse) → MariaDB legallais.db")
     _scrape_direct({"products": [], "mode": "browse"})  # type: ignore[call-arg]
 
 

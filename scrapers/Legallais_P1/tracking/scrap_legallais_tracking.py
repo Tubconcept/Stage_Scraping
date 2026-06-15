@@ -19,6 +19,8 @@ Aucune logique CSS ne doit rester dans ce fichier.
 import sys
 from pathlib import Path
 
+from scrapers.Prolians_P3.orders.scraper_prolians_orders import get_info
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -33,13 +35,13 @@ from db.mariadb_db import init_site_db, insert_tracking as _db_insert_tracking
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
 try:
     from .scraper_legallais_tracking import (
-        today, BASE_URL, NEXT_PAGE_BUTTON,
-        log_exception, connexion, check_date, get_url_cmd, get_Info,
+        BASE_URL, NEXT_PAGE_BUTTON,
+        log, log_exception, connexion, check_date, get_url_cmd, get_Info,
     )
 except ImportError:
     from scrapers.Legallais_P1.tracking.scraper_legallais_tracking import (  # type: ignore[no-redef]
-        today, BASE_URL, NEXT_PAGE_BUTTON,
-        log_exception, connexion, check_date, get_url_cmd, get_Info,
+        BASE_URL, NEXT_PAGE_BUTTON,
+        log, log_exception, connexion, check_date, get_url_cmd, get_Info,
     )
 
 load_dotenv()
@@ -93,45 +95,46 @@ def _legallais_tracking_db():
 @browser(block_images=True, headless=False)
 def main(driver: Driver, _data=None):
     driver.enable_human_mode()
-    print("Ouverture de session…")
+    log.info("Ouverture de session…")
     connexion(driver, LEGALLAIS_EMAIL, LEGALLAIS_PASSWORD)
     driver.disable_human_mode()
     driver.get(BASE_URL + "/user/order")
     driver.wait_for_page_to_be(BASE_URL + "/user/order", wait=5)
     # Collecte des commandes sur la fenêtre glissante (7 jours par défaut)
     check_time = check_date(driver)
-    Url_cmd = []
-    Url_cmd.extend(get_url_cmd(driver))
+    url_cmd = []
+    url_cmd.extend(get_url_cmd(driver))
 
     # Paginer tant que la dernière date de la page n'est pas antérieure à la semaine
     while check_time != True:
         if _stop_flag:
             break
         try:
-            next = driver.select(NEXT_PAGE_BUTTON, 0)
-            next.scroll_into_view()
+            next_ = driver.select(NEXT_PAGE_BUTTON, 0)
+            next_.scroll_into_view()
             driver.move_mouse_to_element(NEXT_PAGE_BUTTON, 1)
-            next.click()
+            next_.click()
 
-            Url_cmd.extend(get_url_cmd(driver))
+            url_cmd.extend(get_url_cmd(driver))
             check_time = check_date(driver)
         except Exception as e:
-            log_exception(today, e, "érreur de bouclade pour le tab commandes")
+            log_exception(log, e, "érreur de bouclade pour le tab commandes")
             break
-    print(f"{len(Url_cmd)} de commande")
+    log.info(f"{len(url_cmd)} commande(s) à traiter")
 
-    for cmd in Url_cmd:
+    for cmd in url_cmd:
         if _stop_flag:
             break
         try:
             driver.get(BASE_URL + cmd['link'], timeout=10)
             driver.wait_for_page_to_be(BASE_URL + cmd['link'], 3)
-            Commande = get_Info(driver, cmd)
-            print(f"Écriture de la commande {Commande} en MariaDB")
-            persist_tracking(Commande)
+            commande = get_info(driver, cmd)
+            log.debug(f"Commande extraite : {commande}")
+            persist_tracking(commande)
         except Exception as e:
-            log_exception(today, e, f"érreur page {cmd['link']}")
-    print(Url_cmd[-1])
+            log_exception(log, e, f"érreur page {cmd['link']}")
+    if url_cmd:
+        log.debug(f"Dernière commande : {url_cmd[-1]}")
 
 
 if "__main__" == __name__:

@@ -234,16 +234,16 @@ class SetinTrackingScraper(BaseScraper):
                     tracking_exp = None
 
             # Date reliquat depuis la liste (ligne-4)
-            Date_Reliquat: str | None = None
+            date_reliquat: str | None = None
             try:
                 reliquat_loc = order_el.locator(Selectors.order_reliquat)
                 count = await reliquat_loc.count()
                 if count > 0:
                     raw_rel = await reliquat_loc.first.inner_text()
                     normalized = self._normalize_date_label(raw_rel)
-                    Date_Reliquat = normalized if normalized else None
-                    if Date_Reliquat:
-                        self.log.debug("[%s] Date reliquat trouvée : %s", id_cmd, Date_Reliquat)
+                    date_reliquat = normalized if normalized else None
+                    if date_reliquat:
+                        self.log.debug("[%s] Date reliquat trouvée : %s", id_cmd, date_reliquat)
                 else:
                     self.log.debug("[%s] Sélecteur reliquat introuvable (chercher : %s)", id_cmd, Selectors.order_reliquat)
             except Exception as e:

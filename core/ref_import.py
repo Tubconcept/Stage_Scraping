@@ -163,8 +163,8 @@ def copy_import_file(src: Path) -> Path:
     dest = dest_dir / src.name
 
     if dest.exists():
-        src_hash = hashlib.md5(src.read_bytes()).hexdigest()
-        dst_hash = hashlib.md5(dest.read_bytes()).hexdigest()
+        src_hash = hashlib.sha512(src.read_bytes()).hexdigest()
+        dst_hash = hashlib.sha512(dest.read_bytes()).hexdigest()
         if src_hash == dst_hash:
             return dest
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")

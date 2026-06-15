@@ -35,6 +35,9 @@ from scrapers.Prolians_P3.products.scraper_prolians_products import (
     FIELDNAMES, SITEMAP_INDEX
 )
 from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
+from core.logger import setup_logger
+
+log = setup_logger("prolians.products")
 
 ROOT = PROJECT_ROOT
 load_dotenv(ROOT / ".env")
@@ -59,7 +62,7 @@ def main():
 
     # Validation des paramètres de découpage
     if args.part < 1 or args.part > args.total:
-        print(f" --part doit etre entre 1 et --total ({args.total})")
+        log.error(f"--part doit être entre 1 et --total ({args.total})")
         sys.exit(1)
 
     # Fichier de log d'échec distinct par shard pour faciliter la reprise manuelle
@@ -72,7 +75,7 @@ def main():
     try:
         db_conn = init_site_db("prolians")
     except Exception as _exc:
-        print(f" Base MariaDB Prolians non initialisée : {_exc}")
+        log.error(f"Base MariaDB Prolians non initialisée : {_exc}")
 
     count_produit = 0
     with sync_playwright() as p:
@@ -84,7 +87,7 @@ def main():
 
         # -------- LOGIN
         if not ensure_logged_in(page, context, USERNAME, PASSWORD):
-            print("Impossible de se connecter — arrêt.")
+            log.error("Connexion Prolians échouée — arrêt.")
             browser.close()
             if db_conn:
                 db_conn.close()
@@ -110,7 +113,7 @@ def main():
         start = (args.part - 1) * chunk
         end = start + chunk if args.part < args.total else len(all_product_files)
         product_files = all_product_files[start:end]
-        print(f" Partie {args.part}/{args.total} — {len(product_files)} fichiers sitemap ({start}—{end-1})")
+        log.info(f"Partie {args.part}/{args.total} — {len(product_files)} fichiers sitemap ({start}—{end-1})")
 
         product_urls = []
         for f in product_files:
@@ -122,9 +125,9 @@ def main():
         # Reprise : ignorer les URLs déjà présentes en base (évite doublons après crash)
         scraped_urls = get_scraped_product_urls(db_conn, "prolians") if db_conn else set()
         if scraped_urls:
-            print(f" Reprise — {len(scraped_urls)} URL(s) déjà scrappée(s) ignorées")
+            log.info(f"Reprise — {len(scraped_urls)} URL(s) déjà scrappée(s) ignorées")
 
-        print(f" Produits détectés : {len(product_urls)}")
+        log.info(f"Produits détectés : {len(product_urls)}")
 
         try:
             for url in product_urls:
@@ -142,10 +145,10 @@ def main():
                     except KeyboardInterrupt:
                         raise
                     except Exception:
-                        print(f"Tentative {attempt+1}/{max_retries} échouée : {url}")
+                        log.warning(f"Tentative {attempt+1}/{max_retries} échouée : {url}")
 
                 if not loaded:
-                    print(f" Impossible de charger {url}")
+                    log.warning(f"Impossible de charger {url}")
                     with open(crash_file, "a", encoding="utf-8") as cf:
                         cf.write(url + "\n")
                     continue
@@ -153,7 +156,7 @@ def main():
                 # Contrôle session périodique : le portail déconnecte après inactivité
                 if count_produit % 20 == 0 and not is_logged_in(page):
                     if not ensure_logged_in(page, context, USERNAME, PASSWORD):
-                        print("Re-login échoué — arrêt.")
+                        log.error("Re-login échoué — arrêt.")
                         browser.close()
                         if db_conn:
                             db_conn.close()
@@ -162,7 +165,7 @@ def main():
 
                 rows = extract_product_from_dom(page)
                 if not rows:
-                    print("Produit ignoré (data=None)")
+                    log.warning(f"Produit ignoré (data=None) : {url}")
                     with open(crash_file, "a", encoding="utf-8") as cf:
                         cf.write(url + "\n")
                     continue
@@ -185,14 +188,14 @@ def main():
                             pass
                 scraped_urls.add(url)  # marque comme traité même si insert partiel
                 count_produit += 1
-                print(f"[{count_produit}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
+                log.info(f"[{count_produit}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
         except KeyboardInterrupt:
-            print(f"\n Arrêt — {count_produit} produit(s) enregistré(s) en MariaDB")
+            log.info(f"Arrêt — {count_produit} produit(s) enregistré(s) en MariaDB")
 
         browser.close()
         if db_conn:
             db_conn.close()
-        print(f"\n {count_produit} produit(s) enregistré(s) en MariaDB")
+        log.info(f"{count_produit} produit(s) enregistré(s) en MariaDB")
 
 
 if __name__ == "__main__":
@@ -230,7 +233,7 @@ class ProlianProductScraper:
         try:
             db_conn = init_site_db("prolians")
         except Exception as _exc:
-            print(f" Base MariaDB Prolians non initialisée : {_exc}")
+            log.error(f"Base MariaDB Prolians non initialisée : {_exc}")
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
@@ -240,6 +243,7 @@ class ProlianProductScraper:
             page = context.new_page()
 
             if not ensure_logged_in(page, context, USERNAME, PASSWORD):
+                log.error("Connexion Prolians échouée — arrêt.")
                 browser.close()
                 if db_conn:
                     db_conn.close()
@@ -263,14 +267,14 @@ class ProlianProductScraper:
             # Reprise : ignorer les URLs déjà en base
             scraped_urls = get_scraped_product_urls(db_conn, "prolians") if db_conn else set()
             if scraped_urls:
-                print(f" Reprise — {len(scraped_urls)} URL(s) déjà scrappée(s) ignorées")
+                log.info(f"Reprise — {len(scraped_urls)} URL(s) déjà scrappée(s) ignorées")
 
-            print(f" Produits détectés : {len(product_urls)}")
+            log.info(f"Produits détectés : {len(product_urls)}")
             count = 0
 
             for url in product_urls:
                 if self._stop_requested:
-                    print("\n Arrêt demandé.")
+                    log.info("Arrêt demandé.")
                     break
                 if url in scraped_urls:
                     continue
@@ -282,7 +286,7 @@ class ProlianProductScraper:
                         loaded = True
                         break
                     except Exception:
-                        print(f"Tentative {attempt+1}/3 échouée : {url}")
+                        log.warning(f"Tentative {attempt+1}/3 échouée : {url}")
                 if not loaded:
                     with open(crash_file, "a", encoding="utf-8") as cf:
                         cf.write(url + "\n")
@@ -315,12 +319,12 @@ class ProlianProductScraper:
                             pass
                 scraped_urls.add(url)
                 count += 1
-                print(f"[{count}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
+                log.info(f"[{count}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
 
             browser.close()
             if db_conn:
                 db_conn.close()
-            print(f"\n {count} produit(s) enregistré(s) en MariaDB")
+            log.info(f"{count} produit(s) enregistré(s) en MariaDB")
 
 
 def create_scraper() -> ProlianProductScraper:

@@ -17,41 +17,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import re
-import os
-import traceback
 from datetime import datetime
 from css_selectors.prolians import Selectors
 from core.utils import clean_text
+from core.logger import setup_logger, log_exception
 
 BASE_URL = Selectors.BASE_URL
+log      = setup_logger("prolians.orders")
 today    = datetime.today().strftime('%Y-%m-%d')
-
-
-# =============================
-# LOG
-# =============================
-
-def log_exception(today, e, commentaire=""):
-    """Journalise une exception dans log/logException-{date}-CMD.txt (hors fermeture navigateur)."""
-    ignorer = [
-        "Target page, context or browser has been closed",
-        "Browser has been closed",
-        "TargetClosedError"
-    ]
-    if any(msg in str(e) for msg in ignorer):
-        return
-
-    os.makedirs("log", exist_ok=True)
-    with open(f"log/logException-{today}-CMD.txt", "a", encoding="utf-8") as f:
-        timestamp = datetime.now().strftime('[%Y-%m-%d %H:%M:%S]')
-        f.write(f"{timestamp} {type(e).__name__}: {str(e)}\n")
-        tb = traceback.extract_tb(e.__traceback__)
-        for frame in tb:
-            f.write(f"  File \"{frame.filename}\", line {frame.lineno}, in {frame.name}\n")
-            f.write(f"    {frame.line}\n")
-        if commentaire:
-            f.write(f"Commentaire: {commentaire}\n")
-        f.write("\n")
 
 
 # =============================
@@ -69,15 +42,15 @@ def navigate_to_orders(page):
         page.locator(Selectors.view_all_orders).click()
         page.wait_for_timeout(4000)
     except Exception as e:
-        print(f"Clic 'Voir toutes mes commandes' échoué : {e} — navigation directe")
+        log.warning(f"Clic 'Voir toutes mes commandes' échoué : {e} — navigation directe")
         page.goto(f"{BASE_URL}/customer/account/history/orders/web", wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
 
     try:
         page.wait_for_selector(Selectors.order_row, timeout=20000)
-        print("Page commandes chargée")
+        log.debug("Page commandes chargée")
     except:
-        print("Sélecteur order_row introuvable sur cette page")
+        log.warning("Sélecteur order_row introuvable sur cette page")
 
 
 def collect_orders(page, date_inf, date_sup):
@@ -109,7 +82,7 @@ def collect_orders(page, date_inf, date_sup):
                 status_el = row.locator(Selectors.order_status)
                 status_txt = status_el.inner_text(timeout=3000).strip() if status_el.count() > 0 else ""
             except Exception as e:
-                print(f"Erreur lecture ligne commande : {e}")
+                log.warning(f"Erreur lecture ligne commande : {e}")
                 continue
 
             row_date = date_cmd.date()
@@ -129,17 +102,17 @@ def collect_orders(page, date_inf, date_sup):
                     "date": date_cmd.strftime("%d/%m/%Y"),
                     "status": status_txt,
                 })
-                print(f"  {webref} ({internalref}) - {date_cmd.date()}")
+                log.debug(f"  {webref} ({internalref}) - {date_cmd.date()}")
 
         if stop:
             break
 
         next_btn = page.locator(Selectors.next_page)
         if next_btn.count() == 0:
-            print("Dernière page atteinte")
+            log.debug("Dernière page atteinte")
             break
         if next_btn.get_attribute("disabled") is not None:
-            print("Dernière page atteinte")
+            log.debug("Dernière page atteinte")
             break
 
         # Attend que la première ligne change après clic « page suivante »
@@ -171,7 +144,7 @@ def get_info(page, order):
         page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
         page.wait_for_timeout(2000)
     except Exception as e:
-        log_exception(today, e, f"Navigation {detail_url}")
+        log_exception(log, e, f"Navigation {detail_url}")
         return None
 
     # Référence commande client
@@ -223,11 +196,11 @@ def get_info(page, order):
 
                 prdt_data.append(f"{ref}:{name}:{qty}")
             except Exception as e:
-                log_exception(today, e, f"Produit ligne {i} de {webref}")
+                log_exception(log, e, f"Produit ligne {i} de {webref}")
     except Exception as e:
-        log_exception(today, e, f"Extraction produits {webref}")
+        log_exception(log, e, f"Extraction produits {webref}")
 
-    print(prdt_data)
+    log.debug(f"prdt_data : {prdt_data}")
 
     return {
         "webref":     webref,
