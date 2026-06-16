@@ -357,23 +357,31 @@ def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ", ".join(f"`{h}`" for h in headers)
 
+    # COALESCE : essaie DD/MM/YYYY, YYYY-MM-DD, puis DD-MM-YYYY
+    # (l'ancien format P1 utilisait des tirets au lieu de slashes)
+    parsed_date = (
+        "COALESCE("
+        "   STR_TO_DATE(`date_cmd`, '%%d/%%m/%%Y'),"
+        "   STR_TO_DATE(`date_cmd`, '%%Y-%%m-%%d'),"
+        "   STR_TO_DATE(`date_cmd`, '%%d-%%m-%%Y')"
+        " )"
+    )
+
     conn_db = _get_conn()
     try:
         with conn_db.cursor() as cur:
             if since is not None:
-                # COALESCE : essaie DD/MM/YYYY, YYYY-MM-DD, puis DD-MM-YYYY
-                # (l'ancien format P1 utilisait des tirets au lieu de slashes)
                 cur.execute(
                     f"SELECT {cols} FROM `{table}`"
-                    " WHERE COALESCE("
-                    "   STR_TO_DATE(`date_cmd`, '%%d/%%m/%%Y'),"
-                    "   STR_TO_DATE(`date_cmd`, '%%Y-%%m-%%d'),"
-                    "   STR_TO_DATE(`date_cmd`, '%%d-%%m-%%Y')"
-                    " ) >= %s",
+                    f" WHERE {parsed_date} >= %s"
+                    f" ORDER BY {parsed_date} DESC",
                     (since,),
                 )
             else:
-                cur.execute(f"SELECT {cols} FROM `{table}`")
+                cur.execute(
+                    f"SELECT {cols} FROM `{table}`"
+                    f" ORDER BY {parsed_date} DESC"
+                )
             rows = cur.fetchall()
     except pymysql.Error as e:
         _log.exception("export_table_to_csv(%s) échec : %s", table, e)
