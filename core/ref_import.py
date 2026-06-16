@@ -43,83 +43,102 @@ _HEADER_WORDS = frozenset({
     "reference_fournisseur", "ref_fournisseur", "article",
 })
 
+# Caractères invisibles qui cassent le parser JSON (espace insécable, zero-width, BOM résiduel...)
+_INVISIBLE_CHARS = (
+    " ", "​", "‌", "‍", "﻿", " ", " ",
+)
+
+_JSON_LIST_KEYS = ("refs", "references", "data", "produits", "articles")
+
+
+def _read_text_any_encoding(file_path: Path) -> str:
+    """Lit un fichier texte en essayant plusieurs encodages courants."""
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            with open(file_path, "r", encoding=enc) as fh:
+                return fh.read()
+        except UnicodeDecodeError:
+            continue
+    return file_path.read_bytes().decode("latin-1")
+
+
+def _normalize_json_text(raw: str) -> str:
+    """Supprime les caractères invisibles et normalise les guillemets typographiques."""
+    cleaned = raw
+    for ch in _INVISIBLE_CHARS:
+        cleaned = cleaned.replace(ch, " ")
+    return (
+        cleaned
+        .replace("“", '"').replace("”", '"')
+        .replace("‘", "'").replace("’", "'")
+    )
+
+
+def _extract_refs_from_json_data(data) -> list[str]:
+    """Extrait la liste de références d'un JSON déjà décodé (liste ou objet)."""
+    if isinstance(data, list):
+        return [str(r).strip() for r in data if str(r).strip()]
+    if isinstance(data, dict):
+        for key in _JSON_LIST_KEYS:
+            if key in data and isinstance(data[key], list):
+                return [str(r).strip() for r in data[key] if str(r).strip()]
+    raise ValueError(
+        "Format JSON invalide.\n"
+        'Attendu : une liste ["ref1", "ref2", ...] '
+        'ou un objet {"refs": ["ref1", ...]}'
+    )
+
+
+def _load_json_refs(file_path: Path) -> list[str]:
+    """Lit un fichier JSON et retourne la liste brute des références."""
+    raw = _read_text_any_encoding(file_path)
+    cleaned = _normalize_json_text(raw)
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Le fichier « {file_path.name} » n'est pas du JSON valide.\n\n"
+            f"Erreur : {exc.msg} (ligne {exc.lineno}, colonne {exc.colno})\n\n"
+            "Vérifiez que le contenu respecte le format :\n"
+            '  • Liste :  ["TSA211", "ECO044", ...]\n'
+            '  • Objet :  {"refs": ["TSA211", ...]}\n\n'
+            "Ou utilisez directement un fichier .csv"
+        ) from exc
+
+    return _extract_refs_from_json_data(data)
+
+
+def _sniff_csv_dialect(sample: str) -> csv.Dialect:
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;|\t")
+    except csv.Error:
+        return csv.excel
+
+
+def _load_csv_refs(file_path: Path) -> list[str]:
+    """Lit un fichier CSV et retourne la liste brute des références."""
+    refs: list[str] = []
+    with open(file_path, "r", encoding="utf-8-sig", newline="") as fh:
+        sample = fh.read(4096)
+        fh.seek(0)
+        dialect = _sniff_csv_dialect(sample)
+        for row in csv.reader(fh, dialect):
+            for cell in row:
+                val = cell.strip()
+                if val and val.lower() not in _HEADER_WORDS:
+                    refs.append(val)
+    return refs
+
 
 def load_refs(file_path: Path) -> list[str]:
     """Lit un fichier CSV ou JSON et retourne la liste brute des références."""
     suffix = file_path.suffix.lower()
 
     if suffix == ".json":
-        # Essayez plusieurs encodages courants
-        raw: str | None = None
-        for enc in ("utf-8-sig", "utf-8", "latin-1"):
-            try:
-                with open(file_path, "r", encoding=enc) as fh:
-                    raw = fh.read()
-                break
-            except UnicodeDecodeError:
-                continue
-        if raw is None:
-            raw = file_path.read_bytes().decode("latin-1")
-
-        # Normalisation : supprime les caractères invisibles qui cassent le parser
-        _INVISIBLE = (
-            " ",  # espace insécable
-            "​",  # zero-width space
-            "‌",  # zero-width non-joiner
-            "‍",  # zero-width joiner
-            "﻿",  # BOM résiduel
-            " ",  # line separator
-            " ",  # paragraph separator
-        )
-        cleaned = raw
-        for ch in _INVISIBLE:
-            cleaned = cleaned.replace(ch, " ")
-        # Guillemets typographiques → guillemets droits
-        cleaned = (
-            cleaned
-            .replace("“", '"').replace("”", '"')  # " "
-            .replace("‘", "'").replace("’", "'")  # ' '
-        )
-
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Le fichier « {file_path.name} » n'est pas du JSON valide.\n\n"
-                f"Erreur : {exc.msg} (ligne {exc.lineno}, colonne {exc.colno})\n\n"
-                "Vérifiez que le contenu respecte le format :\n"
-                '  • Liste :  ["TSA211", "ECO044", ...]\n'
-                '  • Objet :  {"refs": ["TSA211", ...]}\n\n'
-                "Ou utilisez directement un fichier .csv"
-            ) from exc
-
-        if isinstance(data, list):
-            return [str(r).strip() for r in data if str(r).strip()]
-        if isinstance(data, dict):
-            for key in ("refs", "references", "data", "produits", "articles"):
-                if key in data and isinstance(data[key], list):
-                    return [str(r).strip() for r in data[key] if str(r).strip()]
-        raise ValueError(
-            "Format JSON invalide.\n"
-            'Attendu : une liste ["ref1", "ref2", ...] '
-            'ou un objet {"refs": ["ref1", ...]}'
-        )
-
+        return _load_json_refs(file_path)
     if suffix == ".csv":
-        refs: list[str] = []
-        with open(file_path, "r", encoding="utf-8-sig", newline="") as fh:
-            sample = fh.read(4096)
-            fh.seek(0)
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;|\t")
-            except csv.Error:
-                dialect = csv.excel
-            for row in csv.reader(fh, dialect):
-                for cell in row:
-                    val = cell.strip()
-                    if val and val.lower() not in _HEADER_WORDS:
-                        refs.append(val)
-        return refs
+        return _load_csv_refs(file_path)
 
     raise ValueError(
         f"Format de fichier non supporté : {suffix!r}.\n"
