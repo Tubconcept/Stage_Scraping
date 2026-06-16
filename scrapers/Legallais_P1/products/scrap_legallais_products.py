@@ -133,7 +133,7 @@ def _variant_url(base_url: str, variant_ref: str) -> str:
 
 
 # ─── PHASE 1 : collecte des URLs produits (navigateur unique) ─────────────────
-
+SELECTOR = "#products-navbar-button" 
 @browser(headless=False)
 def _collect_browse(driver: Driver, data: dict = None) -> List[Dict]:  # type: ignore[assignment]
     """
@@ -147,8 +147,8 @@ def _collect_browse(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
 
     driver.get(BASE_URL)
     driver.wait_for_element(".o-menu__items__list")
-    driver.move_mouse_to_element("#products-navbar-button")
-    driver.click("#products-navbar-button")
+    driver.move_mouse_to_element(SELECTOR)
+    driver.click(SELECTOR)
 
     categories = scraper.get_categories(category_filter)
     if not categories:
@@ -332,8 +332,8 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
     if mode == "browse":
         driver.get(BASE_URL)
         driver.wait_for_element(".o-menu__items__list")
-        driver.move_mouse_to_element("#products-navbar-button")
-        driver.click("#products-navbar-button")
+        driver.move_mouse_to_element(SELECTOR)
+        driver.click(SELECTOR)
         categories = scraper.get_categories(category_filter)
         categories = [c for c in categories if "guides-de-choix" not in c]
         log.info(f"{len(categories)} catégories trouvées")

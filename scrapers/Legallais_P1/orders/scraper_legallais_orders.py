@@ -26,6 +26,8 @@ import re
 import html
 from collections import defaultdict
 from datetime import datetime, timedelta
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 
 from core.logger import setup_logger, log_exception
 
@@ -105,7 +107,7 @@ def connexion(page):
         page.wait_for_selector(ORDER_DATE_CELL, timeout=4000)
         log.info("Session active détectée")
         return
-    except:
+    except PlaywrightTimeoutError:
         pass
     log.warning("Session expirée — reconnexion manuelle requise")
     print("=" * 50)
@@ -163,7 +165,7 @@ def get_date_reliquat(page, statut):
             stock_label = new_page.locator(RELIQUAT_STOCK_LABEL).inner_text()
             dispo_match = re.search(r"Disponible\s+à\s+partir\s+du\s+(\d{2}/\d{2}/\d{4})", stock_label)
             date_dispo = dispo_match.group(1) if dispo_match else "Date non trouvée"
-        except:
+        except Exception:
             date_dispo = "Date non trouvée ou produit non disponible"
         new_page.close()
         return date_dispo
@@ -186,7 +188,7 @@ def get_info(page, cmd):
         try:
             header   = page.locator(ORDER_HEADER_LINES)
             date_raw = header.nth(1).inner_text(timeout=3000).replace("Commandée le", "").strip()
-        except:
+        except PlaywrightTimeoutError:
             date_raw = page.locator(ORDER_DATE_TEXT).first.inner_text().strip()
         m = re.search(r"\d{2}/\d{2}/\d{4}", date_raw)
         date_cmd = m.group(0) if m else nettoyer_texte(date_raw)
@@ -205,7 +207,7 @@ def get_info(page, cmd):
             # Extraction du titre du produit commandé
             try:
                 title = nettoyer_texte(li.locator(PRODUCT_LINK).first.inner_text(timeout=1000))
-            except Exception:
+            except PlaywrightTimeoutError:
                 title = ""
 
             # Extraction de la référence

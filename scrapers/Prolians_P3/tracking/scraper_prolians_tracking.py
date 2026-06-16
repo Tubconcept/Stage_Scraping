@@ -44,6 +44,7 @@ KNOWN_CARRIERS = list(CARRIER_MAP.values()) + ["DB SCHENKER", "SCHENKER", "COLIS
 # seul le paramètre ?query= reçoit le numéro de colis.
 KUEHNE_TRACKING_URL = "https://mykn.kuehne-nagel.com/public-tracking/shipments?query={n}"
 
+FORMAT_DATE = "%d/%m/%Y" 
 
 # =============================
 # NAVIGATION COMMANDES
@@ -88,7 +89,7 @@ def collect_orders_with_tracking(page, date_inf, date_sup):
             try:
                 webref   = row.locator(Selectors.order_webref).inner_text(timeout=3000).strip()
                 date_txt = row.locator(Selectors.order_date).inner_text(timeout=3000).strip()
-                date_cmd = datetime.strptime(date_txt, "%d/%m/%Y")
+                date_cmd = datetime.strptime(date_txt, FORMAT_DATE)
 
                 internalref_el = row.locator(Selectors.order_internalref)
                 internalref    = internalref_el.inner_text(timeout=3000).strip() if internalref_el.count() > 0 else ""
@@ -121,7 +122,7 @@ def collect_orders_with_tracking(page, date_inf, date_sup):
                 orders.append({
                     "webref":       webref,
                     "internalref":  internalref,
-                    "date":         date_cmd.strftime("%d/%m/%Y"),
+                    "date":         date_cmd.strftime(FORMAT_DATE),
                     "status":       status_txt,
                     "tracking_url": trk_url,
                 })
@@ -407,7 +408,7 @@ def get_order_detail(page, order: dict) -> dict | None:
 
     # Normalisation date au format DD/MM/YYYY
     try:
-        date_cmd = datetime.strptime(order["date"], "%d/%m/%Y").strftime("%d/%m/%Y")
+        date_cmd = datetime.strptime(order["date"], FORMAT_DATE).strftime(FORMAT_DATE)
     except Exception:
         date_cmd = order.get("date", "")
 

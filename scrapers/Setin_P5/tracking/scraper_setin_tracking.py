@@ -138,39 +138,11 @@ class SetinTrackingScraper(BaseScraper):
             new_page = await page.context.new_page()
             await new_page.goto(tracking_url)
             await new_page.wait_for_load_state("domcontentloaded", timeout=15000)
-
-            try:
-                title_loc = new_page.locator("div.ch-block-content-title")
-                if await title_loc.count() > 0:
-                    raw_title = (await title_loc.first.inner_text()).strip()
-                    raw_title = raw_title.replace(
-                        "Informations concernant votre envoi", ""
-                    ).strip()
-                    m = re.search(r"([A-Z0-9]+)", raw_title, re.IGNORECASE)
-                    if m:
-                        return m.group(1).strip()
-            except Exception:
-                pass
-
-            try:
-                ref_input = new_page.locator('input[name="sReference"]')
-                if await ref_input.count() > 0:
-                    value = (await ref_input.first.get_attribute("value")) or ""
-                    value = value.strip()
-                    if value and value != "0":
-                        return value
-            except Exception:
-                pass
-
-            try:
-                body_text = await new_page.locator("body").inner_text()
-                m = re.search(r"\b([A-Z0-9]{8,})\b", body_text, re.IGNORECASE)
-                if m:
-                    return m.group(1).strip()
-            except Exception:
-                pass
-
-            return None
+            return (
+                await self._tracking_number_from_title(new_page)
+                or await self._tracking_number_from_input(new_page)
+                or await self._tracking_number_from_body_text(new_page)
+            )
         except Exception as exc:
             self.log.debug("Erreur extraction numéro de suivi page de suivi : %s", exc)
             return None
@@ -180,6 +152,39 @@ class SetinTrackingScraper(BaseScraper):
                     await new_page.close()
                 except Exception:
                     pass
+
+    @staticmethod
+    async def _tracking_number_from_title(new_page: Page) -> str | None:
+        try:
+            title_loc = new_page.locator("div.ch-block-content-title")
+            if await title_loc.count() == 0:
+                return None
+            raw_title = (await title_loc.first.inner_text()).strip()
+            raw_title = raw_title.replace("Informations concernant votre envoi", "").strip()
+            m = re.search(r"([A-Z0-9]+)", raw_title, re.IGNORECASE)
+            return m.group(1).strip() if m else None
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _tracking_number_from_input(new_page: Page) -> str | None:
+        try:
+            ref_input = new_page.locator('input[name="sReference"]')
+            if await ref_input.count() == 0:
+                return None
+            value = ((await ref_input.first.get_attribute("value")) or "").strip()
+            return value if value and value != "0" else None
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _tracking_number_from_body_text(new_page: Page) -> str | None:
+        try:
+            body_text = await new_page.locator("body").inner_text()
+            m = re.search(r"\b([A-Z0-9]{8,})\b", body_text, re.IGNORECASE)
+            return m.group(1).strip() if m else None
+        except Exception:
+            return None
 
     # ─── Extraction d'une commande (locator Playwright) ───────────────────────
 
@@ -191,74 +196,14 @@ class SetinTrackingScraper(BaseScraper):
             m = re.search(r"\bB\d+[A-Z]+\b", ref_px_raw)
             id_cmd = m.group(0) if m else ref_px_raw.strip()
 
-            ref_cmd = ""
-            try:
-                ref_sel = Selectors.order_ref_template.format(ref_px=id_cmd)
-                ref_cmd = (await order_el.locator(ref_sel).inner_text()).strip()
-            except Exception:
-                pass
-
-            date_cmd = ""
-            try:
-                raw_date = await order_el.locator(Selectors.order_date).first.inner_text()
-                date_cmd = self._normalize_date_label(raw_date)
-            except Exception:
-                pass
-
-            statut_cmd = ""
-            try:
-                statut_cmd = (
-                    await order_el.locator(Selectors.order_status).inner_text(timeout=1000)
-                ).strip()
-            except Exception:
-                pass
-
-            # Suivi transporteur depuis la liste
-            carrier_exp: str | None = None
-            trackinglink_exp: str | None = None
-            tracking_exp: str | None = None
-
-            tracking_loc = order_el.locator(Selectors.order_tracking)
-            if await tracking_loc.count() > 0:
-                tracking_url = (await tracking_loc.first.get_attribute("href")) or ""
-                if tracking_url and tracking_url != "0":
-                    trackinglink_exp = tracking_url
-                    carrier_exp, tracking_exp = _detect_carrier(tracking_url)
-                    if not tracking_exp:
-                        tracking_exp = await self._extract_tracking_number_from_page(page, tracking_url)
-                    if carrier_exp == "Inconnu":
-                        self.log.warning("Transporteur inconnu — %s : %s", id_cmd, tracking_url)
-                else:
-                    trackinglink_exp = None
-                    carrier_exp = None
-                    tracking_exp = None
-
-            # Date reliquat depuis la liste (ligne-4)
-            date_reliquat: str | None = None
-            try:
-                reliquat_loc = order_el.locator(Selectors.order_reliquat)
-                count = await reliquat_loc.count()
-                if count > 0:
-                    raw_rel = await reliquat_loc.first.inner_text()
-                    normalized = self._normalize_date_label(raw_rel)
-                    date_reliquat = normalized if normalized else None
-                    if date_reliquat:
-                        self.log.debug("[%s] Date reliquat trouvée : %s", id_cmd, date_reliquat)
-                else:
-                    self.log.debug("[%s] Sélecteur reliquat introuvable (chercher : %s)", id_cmd, Selectors.order_reliquat)
-            except Exception as e:
-                self.log.debug("[%s] Erreur extraction reliquat : %s", id_cmd, e)
-
-            # data_pdt et weight_exp depuis la page de détail
-            data_pdt = ""
-            weight_exp: str | None = None
-            try:
-                product_href = await link_el.get_attribute("href") or ""
-                if product_href:
-                    product_url = f"{Selectors.BASE_URL}dhtml/{product_href}"
-                    data_pdt, weight_exp = await self._extract_detail_page(page, product_url)
-            except Exception as exc:
-                log_exception(self.log, exc, f"detail page {id_cmd}")
+            ref_cmd = await self._extract_ref_cmd(order_el, id_cmd)
+            date_cmd = await self._extract_date_cmd(order_el)
+            statut_cmd = await self._extract_statut_cmd(order_el)
+            carrier_exp, trackinglink_exp, tracking_exp = await self._extract_tracking_info(
+                page, order_el, id_cmd
+            )
+            date_reliquat = await self._extract_date_reliquat(order_el, id_cmd)
+            data_pdt, weight_exp = await self._extract_product_detail(page, link_el, id_cmd)
 
             return {
                 "id_cmd": id_cmd,
@@ -266,7 +211,7 @@ class SetinTrackingScraper(BaseScraper):
                 "date_cmd": date_cmd,
                 "statut_cmd": statut_cmd,
                 "data_pdt": data_pdt,
-                "Date_Reliquat": Date_Reliquat,
+                "Date_Reliquat": date_reliquat,
                 "weight_exp": weight_exp,
                 "carrier_exp": carrier_exp,
                 "trackinglink_exp": trackinglink_exp,
@@ -276,6 +221,82 @@ class SetinTrackingScraper(BaseScraper):
         except Exception as exc:
             log_exception(self.log, exc, "extract_order tracking")
             return None
+
+    @staticmethod
+    async def _extract_ref_cmd(order_el, id_cmd: str) -> str:
+        try:
+            ref_sel = Selectors.order_ref_template.format(ref_px=id_cmd)
+            return (await order_el.locator(ref_sel).inner_text()).strip()
+        except Exception:
+            return ""
+
+    async def _extract_date_cmd(self, order_el) -> str:
+        try:
+            raw_date = await order_el.locator(Selectors.order_date).first.inner_text()
+            return self._normalize_date_label(raw_date)
+        except Exception:
+            return ""
+
+    @staticmethod
+    async def _extract_statut_cmd(order_el) -> str:
+        try:
+            return (
+                await order_el.locator(Selectors.order_status).inner_text(timeout=1000)
+            ).strip()
+        except Exception:
+            return ""
+
+    async def _extract_tracking_info(
+        self, page: Page, order_el, id_cmd: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """Suivi transporteur depuis la liste."""
+        tracking_loc = order_el.locator(Selectors.order_tracking)
+        if await tracking_loc.count() == 0:
+            return None, None, None
+
+        tracking_url = (await tracking_loc.first.get_attribute("href")) or ""
+        if not tracking_url or tracking_url == "0":
+            return None, None, None
+
+        carrier_exp, tracking_exp = _detect_carrier(tracking_url)
+        if not tracking_exp:
+            tracking_exp = await self._extract_tracking_number_from_page(page, tracking_url)
+        if carrier_exp == "Inconnu":
+            self.log.warning("Transporteur inconnu — %s : %s", id_cmd, tracking_url)
+        return carrier_exp, tracking_url, tracking_exp
+
+    async def _extract_date_reliquat(self, order_el, id_cmd: str) -> str | None:
+        """Date reliquat depuis la liste (ligne-4)."""
+        try:
+            reliquat_loc = order_el.locator(Selectors.order_reliquat)
+            if await reliquat_loc.count() == 0:
+                self.log.debug(
+                    "[%s] Sélecteur reliquat introuvable (chercher : %s)",
+                    id_cmd, Selectors.order_reliquat,
+                )
+                return None
+            raw_rel = await reliquat_loc.first.inner_text()
+            date_reliquat = self._normalize_date_label(raw_rel) or None
+            if date_reliquat:
+                self.log.debug("[%s] Date reliquat trouvée : %s", id_cmd, date_reliquat)
+            return date_reliquat
+        except Exception as e:
+            self.log.debug("[%s] Erreur extraction reliquat : %s", id_cmd, e)
+            return None
+
+    async def _extract_product_detail(
+        self, page: Page, link_el, id_cmd: str
+    ) -> tuple[str, str | None]:
+        """data_pdt et weight_exp depuis la page de détail."""
+        try:
+            product_href = await link_el.get_attribute("href") or ""
+            if not product_href:
+                return "", None
+            product_url = f"{Selectors.BASE_URL}dhtml/{product_href}"
+            return await self._extract_detail_page(page, product_url)
+        except Exception as exc:
+            log_exception(self.log, exc, f"detail page {id_cmd}")
+            return "", None
 
     async def _extract_detail_page(self, page: Page, product_url: str) -> tuple[str, str | None]:
         """Ouvre la page détail et retourne (data_pdt, weight_exp).
