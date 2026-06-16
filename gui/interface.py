@@ -43,7 +43,7 @@ GRAY      = "#757575"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CSV_DIR      = PROJECT_ROOT / "csv"
-
+DATE_FORMAT  = "%d/%m/%Y" 
 
 # ─── Wrapper Legallais products (Botasaurus sync) ────────────────────────────
 
@@ -147,7 +147,7 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
                 )
                 for cmd in get_url_cmd(page):
                     try:
-                        row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
+                        row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
                     except Exception:
                         url_cmd.append(cmd)
                         continue
@@ -242,7 +242,7 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime,
 
 
 def _parse_date(s: str) -> datetime:
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+    for fmt in (DATE_FORMAT, "%Y-%m-%d"):
         try:
             return datetime.strptime(s.strip(), fmt)
         except ValueError:
@@ -766,7 +766,7 @@ class ScraperApp(tk.Tk):
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror("Fichier manquant",
+                messagebox.showerror(MESSAGE,
                                      "Veuillez choisir un fichier de références.")
                 return
             self._launch_by_refs(panel.refs_file_path)
@@ -799,15 +799,16 @@ class ScraperApp(tk.Tk):
             self._start_async(key, scraper.run(), scraper, lambda: "")
 
     # ─── Lanceurs Prolians ────────────────────────────────────────────────────
-
+    MESSAGE = "Fichier manquant" 
+    MESSAGE2 = "Veuillez choisir un fichier de références."
     def _launch_prolians(self, key: str):
         panel = self._panels[key]
         cfg   = SITES_CONFIG["Prolians"]
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror("Fichier manquant",
-                                     "Veuillez choisir un fichier de références.")
+                messagebox.showerror(MESSAGE,
+                                     MESSAGE2)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return
@@ -844,8 +845,8 @@ class ScraperApp(tk.Tk):
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror("Fichier manquant",
-                                     "Veuillez choisir un fichier de références.")
+                messagebox.showerror(MESSAGE,
+                                     MESSAGE2)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return
