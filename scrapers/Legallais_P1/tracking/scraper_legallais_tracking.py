@@ -312,6 +312,18 @@ def get_info(driver: Driver, cmd):
                     if match:
                         numero_suivi = match.group(1)
                     transporteur = "TNT"
+                elif "normatrans" in suivi.lower() or "normatrans" in transporteur.lower():
+                    transporteur = "NORMATRANS"
+                    match = re.search(r"sReference=([A-Z0-9]+)", suivi, re.IGNORECASE)
+                    if match:
+                        numero_suivi = match.group(1)
+                        suivi = "https://normatrans.teliway.com/appli/vnormatrans/tracking/suivi.php?code=normatrans&clef=16&rem=LEGALL14C&sReference=" + numero_suivi
+                elif "traplus" in suivi.lower() or "valot" in transporteur.lower():
+                    transporteur = "VALOT"
+                    match = re.search(r"REFE=([A-Z0-9]+)", suivi, re.IGNORECASE)
+                    if match:
+                        numero_suivi = match.group(1)
+                        suivi = "https://www.traplus.com/twt/cgi-bin/rapacc.pgm?LIEU=VALOT&CACCR=SVPLEGALLAIS&REFE=" + numero_suivi
                 else:
                     log.warning(f"Lien de suivi inconnu ou nouveau format : {suivi}")
         except Exception as e:
