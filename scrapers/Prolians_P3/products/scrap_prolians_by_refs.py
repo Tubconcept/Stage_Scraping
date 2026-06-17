@@ -56,6 +56,109 @@ class ProlianByRefsScraper:
     async def run(self) -> None:
         await asyncio.to_thread(self._sync_run)
 
+    # ─── Helpers navigation ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_direct_product_url(url: str) -> bool:
+        return "/product/" in url or "/p/" in url or "search" not in url
+
+    def _find_product_href_in_results(self, page, ref: str) -> str | None:
+        """Cherche un href produit dans les résultats (exact match, sinon 1er résultat). Retourne None si introuvable."""
+        try:
+            page.wait_for_selector(Selectors.search_result_link, timeout=6000)
+            result_links = page.locator(Selectors.search_result_link).all()
+            ref_spans    = page.locator(Selectors.search_result_ref).all()
+            product_href = None
+            for i, span in enumerate(ref_spans):
+                try:
+                    if span.inner_text(timeout=2000).strip() == str(ref):
+                        product_href = result_links[i].get_attribute("href")
+                        break
+                except Exception:
+                    continue
+            if product_href is None and result_links:
+                product_href = result_links[0].get_attribute("href")
+            if not product_href:
+                print(f"   Aucun résultat pour : {ref}")
+            return product_href or None
+        except Exception:
+            print(f"   Résultats introuvables pour : {ref}")
+            return None
+
+    def _navigate_to_product(self, page, ref: str) -> str | None:
+        """Navigue vers la fiche produit (redirect direct ou via résultats). Retourne l'URL finale ou None."""
+        search_url = f"{Selectors.search_url_template}{quote(str(ref))}"
+        page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+        current_url = page.url
+        if self._is_direct_product_url(current_url):
+            return current_url
+        href = self._find_product_href_in_results(page, ref)
+        if not href:
+            return None
+        full_url = href if href.startswith("http") else f"{Selectors.BASE_URL}{href}"
+        page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+        return page.url
+
+    # ─── Helpers extraction et persistance ────────────────────────────────────
+
+    def _apply_combination_index(self, rows: list[dict]) -> None:
+        """Assigne product_combination_index aux lignes variantes."""
+        if not any(r.get("products_is_combination") == "True" for r in rows):
+            return
+        parent_ref = rows[0].get("product_parent_reference", "")
+        try:
+            grp_idx = resolve_decli_index("prolians", parent_ref)
+            for row in rows:
+                if row.get("products_is_combination") == "True":
+                    row["product_combination_index"] = grp_idx
+        except Exception:
+            pass
+
+    def _upsert_rows(self, db_conn, rows: list[dict], current_url: str) -> None:
+        """Persiste chaque ligne extraite en MariaDB."""
+        if not db_conn:
+            return
+        for row in rows:
+            try:
+                db_row = dict(row)
+                db_row["product_fournisseur_url"] = current_url
+                upsert_product(db_conn, "prolians", db_row)
+            except Exception:
+                pass
+
+    # ─── Traitement par référence ─────────────────────────────────────────────
+
+    def _process_ref(self, page, context, db_conn, ref: str, idx: int, count: int) -> int | None:
+        """Traite une référence. Retourne 1 si enregistrée, 0 si ignorée, None si session perdue."""
+        print(f" [{idx + 1}/{len(self._refs)}] Recherche : {ref}")
+        try:
+            current_url = self._navigate_to_product(page, ref)
+            if current_url is None:
+                return 0
+            if count % 20 == 0 and not is_logged_in(page):
+                if not ensure_logged_in(page, context, USERNAME, PASSWORD):
+                    return None
+                page.goto(current_url, wait_until="domcontentloaded", timeout=10000)
+            try:
+                page.wait_for_selector(Selectors.title, timeout=5000)
+            except Exception:
+                print(f"   Fiche non chargée pour : {ref}")
+                return 0
+            rows = extract_product_from_dom(page)
+            if not rows:
+                print(f"   Aucune donnée extraite pour : {ref}")
+                return 0
+            self._apply_combination_index(rows)
+            self._upsert_rows(db_conn, rows, current_url)
+            ref_found = rows[0].get("product_reference_fournisseur", ref)
+            print(f"   [{count + 1}] {ref_found} ({len(rows)} ligne(s))")
+            return 1
+        except Exception as exc:
+            print(f"   Erreur référence {ref} : {exc}")
+            return 0
+
+    # ─── Boucle principale ────────────────────────────────────────────────────
+
     def _sync_run(self) -> None:
         db_conn = None
         try:
@@ -83,99 +186,10 @@ class ProlianByRefsScraper:
                 if self._stop_requested:
                     print("\n Arrêt demandé.")
                     break
-
-                search_url = f"{Selectors.search_url_template}{quote(str(ref))}"
-                print(f" [{idx + 1}/{len(self._refs)}] Recherche : {ref}")
-
-                try:
-                    page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
-                    current_url = page.url
-
-                    # Vérifier si redirection directe vers la fiche produit
-                    is_product = (
-                        "/product/" in current_url
-                        or "/p/" in current_url
-                        or "search" not in current_url
-                    )
-
-                    if not is_product:
-                        # Page de résultats : chercher la référence exacte en premier
-                        product_href = None
-                        try:
-                            page.wait_for_selector(Selectors.search_result_link, timeout=6000)
-                            result_links = page.locator(Selectors.search_result_link).all()
-                            ref_spans    = page.locator(Selectors.search_result_ref).all()
-
-                            for i, span in enumerate(ref_spans):
-                                try:
-                                    if span.inner_text(timeout=2000).strip() == str(ref):
-                                        product_href = result_links[i].get_attribute("href")
-                                        break
-                                except Exception:
-                                    continue
-
-                            # Si aucune correspondance exacte → 1er résultat
-                            if product_href is None and result_links:
-                                product_href = result_links[0].get_attribute("href")
-
-                        except Exception:
-                            print(f"   Résultats introuvables pour : {ref}")
-                            continue
-
-                        if not product_href:
-                            print(f"   Aucun résultat pour : {ref}")
-                            continue
-
-                        full_url = (
-                            product_href
-                            if product_href.startswith("http")
-                            else f"{Selectors.BASE_URL}{product_href}"
-                        )
-                        page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
-                        current_url = page.url
-
-                    # Contrôle de session périodique
-                    if count % 20 == 0 and not is_logged_in(page):
-                        if not ensure_logged_in(page, context, USERNAME, PASSWORD):
-                            break
-                        page.goto(current_url, wait_until="domcontentloaded", timeout=10000)
-
-                    # Extraction complète (même fonction que le mode catalogue)
-                    try:
-                        page.wait_for_selector(Selectors.title, timeout=5000)
-                    except Exception:
-                        print(f"   Fiche non chargée pour : {ref}")
-                        continue
-
-                    rows = extract_product_from_dom(page)
-                    if not rows:
-                        print(f"   Aucune donnée extraite pour : {ref}")
-                        continue
-                    if any(r.get("products_is_combination") == "True" for r in rows):
-                        parent_ref = rows[0].get("product_parent_reference", "")
-                        try:
-                            grp_idx = resolve_decli_index("prolians", parent_ref)
-                            for row in rows:
-                                if row.get("products_is_combination") == "True":
-                                    row["product_combination_index"] = grp_idx
-                        except Exception:
-                            pass
-
-                    if db_conn:
-                        for row in rows:
-                            try:
-                                db_row = dict(row)
-                                db_row["product_fournisseur_url"] = current_url
-                                upsert_product(db_conn, "prolians", db_row)
-                            except Exception:
-                                pass
-
-                    count += 1
-                    ref_found = rows[0].get("product_reference_fournisseur", ref)
-                    print(f"   [{count}] {ref_found} ({len(rows)} ligne(s))")
-
-                except Exception as exc:
-                    print(f"   Erreur référence {ref} : {exc}")
+                result = self._process_ref(page, context, db_conn, ref, idx, count)
+                if result is None:
+                    break
+                count += result
 
             browser.close()
             if db_conn:

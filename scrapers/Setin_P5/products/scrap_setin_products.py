@@ -99,6 +99,171 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
             except Exception as exc:
                 self.log.debug("MariaDB produit ignoré : %s", exc)
 
+    # ─── Helpers partagés ────────────────────────────────────────────────────
+
+    def _apply_combination_index(self, products: list[dict]) -> None:
+        """Assigne IndexCombination aux variantes d'un produit combiné."""
+        if not products:
+            return
+        parent_ref = products[0].get("parent", "") or ""
+        try:
+            grp_idx = resolve_decli_index("setin", parent_ref)
+            for _p in products:
+                if _p.get("IsCombination"):
+                    _p["IndexCombination"] = grp_idx
+        except Exception:
+            pass
+
+    async def _scrape_and_persist(self, page, link: str) -> int:
+        """Extrait un produit, applique l'index variante et persiste. Retourne le nombre de lignes écrites."""
+        has_combo, products = await self._get_product_data(page, link)
+        if has_combo and products:
+            self._apply_combination_index(products)
+        cat1, cat2, cat3 = await self._ariane(page)
+        for produit in products:
+            self._persist_product(produit, cat1, cat2, cat3, link)
+        return len(products)
+
+    async def _ensure_session(self, page, storage_path) -> None:
+        """Navigue vers la page d'accueil, attend le chargement et reconnecte si besoin."""
+        await page.goto(Selectors.BASE_URL)
+        await page.wait_for_load_state("domcontentloaded")
+        try:
+            await page.locator(Selectors.page_loader).wait_for(state="hidden", timeout=10000)
+        except Exception:
+            pass
+        try:
+            await page.locator(Selectors.home_return_button).first.click(timeout=TIMEOUT_MEDIUM)
+            await page.wait_for_load_state("domcontentloaded")
+        except Exception:
+            pass
+        if not await self._is_logged_in(page):
+            self.log.info("Session expirée — reconnexion")
+            await self._connexion(page)
+            await self.save_storage_state(storage_path)
+        else:
+            self.log.info("Session active")
+
+    def _load_seen_urls(self) -> set[str]:
+        """Charge les URLs déjà scrappées depuis la DB pour reprendre un scraping interrompu."""
+        seen: set[str] = (
+            get_scraped_product_urls(self._db_conn, "setin")
+            if self._db_conn is not None else set()
+        )
+        if seen:
+            self.log.info("Reprise — %d URL(s) déjà scrappée(s) ignorées", len(seen))
+        return seen
+
+    # ─── Mode dates ──────────────────────────────────────────────────────────
+
+    async def _run_date_mode(self, page, seen: set[str], limit_products: int | None) -> int:
+        """Scrape les produits issus de l'historique commandes. Retourne le nombre de lignes écrites."""
+        product_links = await self._collect_product_urls_from_orders(page)
+        self.log.info("Mode dates : %d produit(s) à scraper", len(product_links))
+        rows_written = 0
+        for link in product_links:
+            if self.should_stop():
+                break
+            if limit_products is not None and rows_written >= limit_products:
+                break
+            if link in seen:
+                continue
+            seen.add(link)
+            try:
+                rows_written += await self._scrape_and_persist(page, link)
+            except Exception as exc:
+                log_exception(self.log, exc, f"Produit {link}")
+        return rows_written
+
+    # ─── Mode catalogue ───────────────────────────────────────────────────────
+
+    async def _collect_slice_links(self, page, cat_url: str, seen: set[str]) -> list[str]:
+        """Collecte les liens produits visibles sur la tranche courante (non encore traités)."""
+        page_links: list[str] = []
+        try:
+            await page.wait_for_selector("div.product_box", timeout=5000)
+            for box in await page.locator(Selectors.product_box_link).element_handles():
+                lnk = await box.get_attribute("href")
+                if lnk and lnk not in seen:
+                    page_links.append(lnk)
+                    seen.add(lnk)
+        except Exception as exc:
+            log_exception(self.log, exc, f"Liens {cat_url}")
+        return page_links
+
+    async def _advance_to_next_slice(self, page) -> bool:
+        """Clique sur 'charger plus'. Retourne False si le bouton est absent ou si une erreur survient."""
+        try:
+            next_btn = page.locator(Selectors.pagination_next)
+            if await next_btn.count() == 0:
+                return False
+            await next_btn.scroll_into_view_if_needed()
+            await next_btn.click()
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(1000)
+            return True
+        except Exception:
+            return False
+
+    async def _process_slice_links(
+        self, product_page, page_links: list[str], limit_products: int | None, rows_written: int
+    ) -> int:
+        """Scrape chaque lien d'une tranche. Retourne le total de lignes écrites (cumulatif)."""
+        for link in page_links:
+            if self.should_stop():
+                break
+            if limit_products is not None and rows_written >= limit_products:
+                break
+            try:
+                rows_written += await self._scrape_and_persist(product_page, link)
+            except Exception as exc:
+                log_exception(self.log, exc, f"Produit {link}")
+        return rows_written
+
+    async def _run_catalogue_category(
+        self, page, product_page, cat_url: str, seen: set[str],
+        limit_products: int | None, rows_written: int,
+    ) -> int:
+        """Traite une catégorie (redirection directe ou pagination tranche par tranche). Retourne le total cumulatif."""
+        await page.goto(cat_url)
+        await page.wait_for_load_state("domcontentloaded")
+
+        if page.url != cat_url:
+            link = page.url
+            if link not in seen:
+                seen.add(link)
+                try:
+                    rows_written += await self._scrape_and_persist(product_page, link)
+                except Exception as exc:
+                    log_exception(self.log, exc, f"Produit {link}")
+            return rows_written
+
+        while not self.should_stop():
+            if limit_products is not None and rows_written >= limit_products:
+                break
+            page_links = await self._collect_slice_links(page, cat_url, seen)
+            rows_written = await self._process_slice_links(product_page, page_links, limit_products, rows_written)
+            if not await self._advance_to_next_slice(page):
+                break
+
+        return rows_written
+
+    async def _run_catalogue_mode(self, page, seen: set[str], limit_products: int | None) -> int:
+        """Scrape le catalogue catégorie par catégorie. Retourne le nombre total de lignes écrites."""
+        cat_urls = await self._get_categories(page, self._category_name)
+        self.log.info("Mode catalogue : %d sous-catégorie(s)", len(cat_urls))
+        product_page = await self.new_page()
+        rows_written = 0
+
+        for cat_url in cat_urls:
+            if self.should_stop():
+                break
+            rows_written = await self._run_catalogue_category(
+                page, product_page, cat_url, seen, limit_products, rows_written
+            )
+
+        return rows_written
+
     # ─── Point d'entrée principal ─────────────────────────────────────────────
 
     async def run(self, limit_products: int | None = None) -> None:
@@ -109,7 +274,6 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
             self.log.warning("Base MariaDB non initialisée : %s", exc)
             self._db_conn = None
 
-        # Restauration de la session Playwright (cookies) si disponible
         storage_path = PROFILES_DIR / "setin" / "session.json"
         storage_state = str(storage_path) if storage_path.exists() else None
 
@@ -118,160 +282,12 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
         rows_written = 0
 
         try:
-            await page.goto(Selectors.BASE_URL)
-            await page.wait_for_load_state("domcontentloaded")
-            try:
-                await page.locator(Selectors.page_loader).wait_for(
-                    state="hidden", timeout=10000
-                )
-            except Exception:
-                pass
-            try:
-                await page.locator(Selectors.home_return_button).first.click(
-                    timeout=TIMEOUT_MEDIUM
-                )
-                await page.wait_for_load_state("domcontentloaded")
-            except Exception:
-                pass
-
-            if not await self._is_logged_in(page):
-                self.log.info("Session expirée — reconnexion")
-                await self._connexion(page)
-                await self.save_storage_state(storage_path)
-            else:
-                self.log.info("Session active")
-
-            # Seed 'seen' from DB so that already-scraped URLs are skipped on resume
-            seen: set[str] = (
-                get_scraped_product_urls(self._db_conn, "setin")
-                if self._db_conn is not None else set()
-            )
-            if seen:
-                self.log.info("Reprise — %d URL(s) déjà scrappée(s) ignorées", len(seen))
-
+            await self._ensure_session(page, storage_path)
+            seen = self._load_seen_urls()
             if self._use_order_dates:
-                # ── Mode dates : liste pré-collectée, traitement classique ──────
-                product_links = await self._collect_product_urls_from_orders(page)
-                self.log.info("Mode dates : %d produit(s) à scraper", len(product_links))
-                for link in product_links:
-                    if self.should_stop():
-                        break
-                    if limit_products is not None and rows_written >= limit_products:
-                        break
-                    if link in seen:
-                        continue
-                    seen.add(link)
-                    try:
-                        has_combo, products = await self._get_product_data(page, link)
-                        if has_combo and products:
-                            parent_ref = products[0].get("parent", "") or ""
-                            try:
-                                grp_idx = resolve_decli_index("setin", parent_ref)
-                                for _p in products:
-                                    if _p.get("IsCombination"):
-                                        _p["IndexCombination"] = grp_idx
-                            except Exception:
-                                pass
-                        cat1, cat2, cat3 = await self._ariane(page)
-                        for produit in products:
-                            self._persist_product(produit, cat1, cat2, cat3, link)
-                            rows_written += 1
-                    except Exception as exc:
-                        log_exception(self.log, exc, f"Produit {link}")
-
+                rows_written = await self._run_date_mode(page, seen, limit_products)
             else:
-                # ── Mode catalogue : traitement tranche par tranche ──────────────
-                # product_page navigue sur chaque produit ;
-                # page reste sur la catégorie et gère le "charger plus"
-                cat_urls = await self._get_categories(page, self._category_name)
-                self.log.info("Mode catalogue : %d sous-catégorie(s)", len(cat_urls))
-                product_page = await self.new_page()
-
-                for cat_url in cat_urls:
-                    if self.should_stop():
-                        break
-                    await page.goto(cat_url)
-                    await page.wait_for_load_state("domcontentloaded")
-
-                    # Redirection directe vers un produit unique
-                    if page.url != cat_url:
-                        link = page.url
-                        if link not in seen:
-                            seen.add(link)
-                            try:
-                                has_combo, products = await self._get_product_data(product_page, link)
-                                if has_combo and products:
-                                    parent_ref = products[0].get("parent", "") or ""
-                                    try:
-                                        grp_idx = resolve_decli_index("setin", parent_ref)
-                                        for _p in products:
-                                            if _p.get("IsCombination"):
-                                                _p["IndexCombination"] = grp_idx
-                                    except Exception:
-                                        pass
-                                cat1, cat2, cat3 = await self._ariane(product_page)
-                                for produit in products:
-                                    self._persist_product(produit, cat1, cat2, cat3, link)
-                                    rows_written += 1
-                            except Exception as exc:
-                                log_exception(self.log, exc, f"Produit {link}")
-                        continue
-
-                    # Parcourir tranche par tranche ("charger plus")
-                    while not self.should_stop():
-                        if limit_products is not None and rows_written >= limit_products:
-                            break
-
-                        # Liens visibles sur la tranche courante (non encore traités)
-                        page_links: list[str] = []
-                        try:
-                            await page.wait_for_selector("div.product_box", timeout=5000)
-                            for box in await page.locator(
-                                Selectors.product_box_link
-                            ).element_handles():
-                                lnk = await box.get_attribute("href")
-                                if lnk and lnk not in seen:
-                                    page_links.append(lnk)
-                                    seen.add(lnk)
-                        except Exception as exc:
-                            log_exception(self.log, exc, f"Liens {cat_url}")
-
-                        # Traitement immédiat de la tranche
-                        for link in page_links:
-                            if self.should_stop():
-                                break
-                            if limit_products is not None and rows_written >= limit_products:
-                                break
-                            try:
-                                has_combo, products = await self._get_product_data(product_page, link)
-                                if has_combo and products:
-                                    parent_ref = products[0].get("parent", "") or ""
-                                    try:
-                                        grp_idx = resolve_decli_index("setin", parent_ref)
-                                        for _p in products:
-                                            if _p.get("IsCombination"):
-                                                _p["IndexCombination"] = grp_idx
-                                    except Exception:
-                                        pass
-                                cat1, cat2, cat3 = await self._ariane(product_page)
-                                for produit in products:
-                                    self._persist_product(produit, cat1, cat2, cat3, link)
-                                    rows_written += 1
-                            except Exception as exc:
-                                log_exception(self.log, exc, f"Produit {link}")
-
-                        # Charger la tranche suivante via "charger plus"
-                        try:
-                            next_btn = page.locator(Selectors.pagination_next)
-                            if await next_btn.count() == 0:
-                                break
-                            await next_btn.scroll_into_view_if_needed()
-                            await next_btn.click()
-                            await page.wait_for_load_state("domcontentloaded")
-                            await page.wait_for_timeout(1000)
-                        except Exception:
-                            break
-
+                rows_written = await self._run_catalogue_mode(page, seen, limit_products)
         except Exception as exc:
             log_exception(self.log, exc, "run() setin_products")
         finally:

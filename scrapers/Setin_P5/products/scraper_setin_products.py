@@ -121,6 +121,29 @@ class SetinProductScraper(BaseScraper):
 
     # ─── Navigation catégories ────────────────────────────────────────────────
 
+    async def _collect_lvl3_links(self, page: Page) -> list[str]:
+        """Collecte les hrefs des éléments de niveau 3 visibles dans le menu."""
+        links: list[str] = []
+        for link_el in await page.locator(Selectors.category_level3).all():
+            try:
+                href = await link_el.get_attribute("href")
+                if href:
+                    links.append(href)
+                    self.log.debug("Lien catégorie : %s", href)
+            except Exception as exc:
+                log_exception(self.log, exc, "Récup lien lvl3")
+        return links
+
+    async def _collect_lvl2_categories(self, page: Page, categories: list[str]) -> None:
+        """Clique chaque entrée de niveau 2 et collecte les liens de niveau 3."""
+        for catlvl2 in await page.locator(Selectors.category_level2).all():
+            try:
+                await catlvl2.click()
+                await page.wait_for_timeout(300)
+                categories.extend(await self._collect_lvl3_links(page))
+            except Exception as exc:
+                log_exception(self.log, exc, "Récup cat lvl3")
+
     async def _get_categories(self, page: Page, category_name: str) -> list[str]:
         """Parcourt le menu à trois niveaux et collecte les URLs de sous-catégories.
 
@@ -134,9 +157,7 @@ class SetinProductScraper(BaseScraper):
         categories: list[str] = []
         await page.locator(Selectors.menu_products).click()
 
-        selector_lvl1 = Selectors.category_level1.format(
-            category=category_name
-        )
+        selector_lvl1 = Selectors.category_level1.format(category=category_name)
         catlvl1 = await page.locator(selector_lvl1).all()
         self.log.info("Catégories niveau 1 trouvées : %d", len(catlvl1))
 
@@ -144,30 +165,58 @@ class SetinProductScraper(BaseScraper):
             try:
                 await catlv1.click()
                 await page.wait_for_timeout(400)
-                catlv2s = await page.locator(Selectors.category_level2).all()
-                for catlvl2 in catlv2s:
-                    try:
-                        await catlvl2.click()
-                        await page.wait_for_timeout(300)
-                        catlvl3s = await page.locator(
-                            Selectors.category_level3
-                        ).all()
-                        for link_el in catlvl3s:
-                            try:
-                                href = await link_el.get_attribute("href")
-                                if href:
-                                    categories.append(href)
-                                    self.log.debug("Lien catégorie : %s", href)
-                            except Exception as exc:
-                                log_exception(self.log, exc, "Récup lien lvl3")
-                    except Exception as exc:
-                        log_exception(self.log, exc, "Récup cat lvl3")
+                await self._collect_lvl2_categories(page, categories)
             except Exception as exc:
                 log_exception(self.log, exc, "Récup cat lvl2")
 
         return categories
 
     # ─── Liste de produits d'une sous-catégorie ───────────────────────────────
+
+    async def _try_load_next_page(self, page: Page) -> bool:
+        """Clique sur 'charger plus'. Retourne True s'il reste des pages, False sinon ou en cas d'erreur."""
+        try:
+            next_btn = page.locator(Selectors.pagination_next)
+            if await next_btn.count() == 0:
+                return False
+            await next_btn.scroll_into_view_if_needed()
+            await next_btn.click()
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(1000)
+            return await page.locator(Selectors.pagination_next).count() > 0
+        except Exception:
+            return False
+
+    async def _load_all_pages(self, page: Page) -> None:
+        """Charge toutes les tranches via 'charger plus' (ignoré si _first_page_only=True)."""
+        if self._first_page_only:
+            return
+        has_more = True
+        while has_more:
+            has_more = await self._try_load_next_page(page)
+
+    async def _collect_product_links(
+        self, page: Page, url: str
+    ) -> tuple[list[str], str, str, str]:
+        """Collecte les hrefs produits et les catégories depuis la page courante."""
+        try:
+            await page.wait_for_selector("div.product_box", timeout=5000)
+            box_handles: list[ElementHandle] = await page.locator(
+                Selectors.product_box_link
+            ).element_handles()
+            products: list[str] = []
+            for box in box_handles:
+                try:
+                    link = await box.get_attribute("href")
+                    if link:
+                        products.append(link)
+                except Exception as exc:
+                    log_exception(self.log, exc, "Obtention lien produit")
+            cat1, cat2, cat3 = await self._ariane(page)
+            return products, cat1, cat2, cat3
+        except Exception as exc:
+            log_exception(self.log, exc, f"Liens produits / ariane {url}")
+            return [], "fail", "fail", "fail"
 
     async def _get_products_link(
         self, page: Page, url: str
@@ -181,61 +230,74 @@ class SetinProductScraper(BaseScraper):
         Returns:
             Tuple (liste d'URLs produit, cat1, cat2, cat3).
         """
-        products: list[str] = []
         self.log.info("Visite sous-catégorie : %s", url)
         await page.goto(url)
         await page.wait_for_load_state("domcontentloaded")
 
-        # Détection de redirection vers un produit unique
         current_url = page.url
         if current_url != url:
             self.log.info("Redirection détectée → produit unique : %s", current_url)
-            products.append(current_url)
             cat1, cat2, cat3 = await self._ariane(page)
-            return products, cat1, cat2, cat3
+            return [current_url], cat1, cat2, cat3
 
-        # Chargement progressif ("charger plus") — ignoré si _first_page_only=True
-        if not self._first_page_only:
-            try:
-                while True:
-                    next_btn = page.locator(Selectors.pagination_next)
-                    try:
-                        if await next_btn.count() == 0:
-                            break
-                        await next_btn.scroll_into_view_if_needed()
-                        await next_btn.click()
-                        await page.wait_for_load_state("domcontentloaded")
-                        await page.wait_for_timeout(1000)
-                        if await page.locator(Selectors.pagination_next).count() == 0:
-                            break
-                    except PlaywrightTimeout:
-                        break
-                    except Exception:
-                        break
-            except Exception as exc:
-                log_exception(self.log, exc, f"Pagination {url}")
-
-        try:
-            await page.wait_for_selector("div.product_box", timeout=5000)
-            box_handles: list[ElementHandle] = await page.locator(
-                Selectors.product_box_link
-            ).element_handles()
-            for box in box_handles:
-                try:
-                    link = await box.get_attribute("href")
-                    if link:
-                        products.append(link)
-                except Exception as exc:
-                    log_exception(self.log, exc, "Obtention lien produit")
-            cat1, cat2, cat3 = await self._ariane(page)
-        except Exception as exc:
-            cat1, cat2, cat3 = "fail", "fail", "fail"
-            log_exception(self.log, exc, f"Liens produits / ariane {url}")
-
+        await self._load_all_pages(page)
+        products, cat1, cat2, cat3 = await self._collect_product_links(page, url)
         self.log.info("%d liens produits collectés", len(products))
         return products, cat1, cat2, cat3
 
     # ─── Extraction des données d'une page produit ────────────────────────────
+
+    async def _open_row_detail(self, page: Page, row: Locator, url: str) -> None:
+        """Ouvre le détail d'une ligne si elle n'est pas déjà ouverte et déclenche le chargement du stock."""
+        classes = await row.get_attribute("class") or ""
+        if "ligne_ouverte" in classes:
+            return
+        try:
+            await row.locator(Selectors.row_detail_button).click()
+            await page.wait_for_timeout(300)
+            # Déclencher le chargement du stock : SETIN l'affiche
+            # uniquement après sélection d'une variante + interaction quantité
+            try:
+                qty_loc = page.locator(Selectors.quantity_input)
+                if await qty_loc.count() > 0:
+                    await qty_loc.first.fill("1")
+                    await qty_loc.first.press("Tab")
+                    await page.wait_for_timeout(500)
+            except Exception:
+                pass
+        except Exception as exc:
+            log_exception(self.log, exc, f"Click détail {url}")
+
+    @staticmethod
+    def _filter_cross_sell(cs_raw: str, group_refs_set: set[str]) -> str:
+        """Filtre les refs du groupe courant du champ cross-sell."""
+        if not cs_raw:
+            return ""
+        if group_refs_set:
+            return "||".join(r for r in cs_raw.split("||") if r and r not in group_refs_set)
+        return cs_raw
+
+    def _apply_page_metadata(
+        self,
+        products: list[dict],
+        page_status: str,
+        eco_labels: str,
+        all_images: str,
+        group_refs_str: str,
+        parent_ref: str,
+        group_refs_set: set[str],
+    ) -> None:
+        """Applique les champs communs (images, statut, refs groupe, cross-sell) à toutes les variantes."""
+        for p in products:
+            p["productImages"]     = all_images
+            p["product_status"]    = page_status
+            p["product_eco_label"] = eco_labels
+            p["group_refs"]        = group_refs_str
+            if not p.get("parent"):
+                p["parent"] = parent_ref
+            p["product_cross_sell"] = self._filter_cross_sell(
+                p.get("product_cross_sell", ""), group_refs_set
+            )
 
     async def _get_product_data(
         self, page: Page, url: str
@@ -254,16 +316,12 @@ class SetinProductScraper(BaseScraper):
         await page.goto(url)
         await page.wait_for_load_state("domcontentloaded")
         try:
-            await page.wait_for_selector(
-                Selectors.table_wait, timeout=2000
-            )
+            await page.wait_for_selector(Selectors.table_wait, timeout=2000)
         except PlaywrightTimeout:
             pass
 
         table = page.locator(Selectors.product_table)
-        product_rows: list[Locator] = await table.locator(
-            Selectors.product_row
-        ).all()
+        product_rows: list[Locator] = await table.locator(Selectors.product_row).all()
         nb_rows = len(product_rows)
         self.log.debug("%d ligne(s) produit sur %s", nb_rows, url)
 
@@ -272,24 +330,7 @@ class SetinProductScraper(BaseScraper):
         products: list[dict] = []
 
         for row in product_rows:
-            classes = await row.get_attribute("class") or ""
-            if "ligne_ouverte" not in classes:
-                try:
-                    await row.locator(Selectors.row_detail_button).click()
-                    await page.wait_for_timeout(300)
-                    # Déclencher le chargement du stock : SETIN l'affiche
-                    # uniquement après sélection d'une variante + interaction quantité
-                    try:
-                        qty_loc = page.locator(Selectors.quantity_input)
-                        if await qty_loc.count() > 0:
-                            await qty_loc.first.fill("1")
-                            await qty_loc.first.press("Tab")
-                            await page.wait_for_timeout(500)
-                    except Exception:
-                        pass
-                except Exception as exc:
-                    log_exception(self.log, exc, f"Click détail {url}")
-
+            await self._open_row_detail(page, row, url)
             try:
                 produit, row_updates_index = await self._extract_row_data(
                     page, row, url, grp_ref, nb_rows
@@ -300,36 +341,150 @@ class SetinProductScraper(BaseScraper):
             except Exception as exc:
                 log_exception(self.log, exc, f"Extraction ligne {url}")
 
-        # Champs communs à toutes les variantes (page produit)
-        page_status = await self._get_product_status(page)
-        eco_labels = await self._get_eco_labels(page)
-
-        all_images = "||".join(
-            dict.fromkeys(p["image"] for p in products if p.get("image"))
-        )
-
-        # Toutes les références du groupe : parent || enfant1 || enfant2 || ...
+        page_status  = await self._get_product_status(page)
+        eco_labels   = await self._get_eco_labels(page)
+        all_images   = "||".join(dict.fromkeys(p["image"] for p in products if p.get("image")))
         all_group_refs = list(dict.fromkeys(p["ref"] for p in products if p.get("ref")))
-        group_refs_set = set(all_group_refs)
         group_refs_str = "||".join(all_group_refs)
-        parent_ref = all_group_refs[0] if all_group_refs else ""
+        parent_ref     = all_group_refs[0] if all_group_refs else ""
 
-        for p in products:
-            p["productImages"]  = all_images
-            p["product_status"] = page_status
-            p["product_eco_label"] = eco_labels
-            p["group_refs"]     = group_refs_str
-            if not p.get("parent"):
-                p["parent"]     = parent_ref
-            # Filtre : exclure les refs du groupe lui-même du cross-sell
-            cs_raw = p.get("product_cross_sell", "")
-            if cs_raw and group_refs_set:
-                filtered = [r for r in cs_raw.split("||") if r and r not in group_refs_set]
-                p["product_cross_sell"] = "||".join(filtered)
-            elif not cs_raw:
-                p["product_cross_sell"] = ""
-
+        self._apply_page_metadata(
+            products, page_status, eco_labels,
+            all_images, group_refs_str, parent_ref, set(all_group_refs),
+        )
         return update_index, products
+
+    # ─── Extraction d'une ligne variante — helpers ───────────────────────────
+
+    async def _extract_stock_status(self, page: Page, row: Locator, url: str) -> str:
+        """Lit le statut stock de la variante avec fallback sur le sélecteur alternatif."""
+        try:
+            stock_loc = page.locator(Selectors.product_stock_status)
+            if await stock_loc.count() == 0:
+                stock_loc = row.locator(Selectors.product_stock_status)
+            try:
+                await stock_loc.first.wait_for(state="visible", timeout=3000)
+            except PlaywrightTimeout:
+                pass
+            texts = await stock_loc.all_inner_texts()
+            if not any(t.strip() for t in texts):
+                alt_loc = row.locator(Selectors.product_stock_status_alt)
+                if await alt_loc.count() > 0:
+                    texts = await alt_loc.all_inner_texts()
+            return ", ".join(t.strip() for t in texts if t.strip())
+        except Exception as exc:
+            log_exception(self.log, exc, f"{url} stock_status")
+            return ""
+
+    async def _extract_docs(self, page: Page, url: str) -> list[str]:
+        """Collecte les hrefs de tous les documents liés au produit."""
+        doc_list: list[str] = []
+        try:
+            doc_handles: list[ElementHandle] = await page.locator(
+                Selectors.product_docs_url
+            ).element_handles()
+            for doc in doc_handles:
+                href = await doc.get_attribute("href")
+                if href:
+                    doc_list.append(href)
+        except Exception as exc:
+            log_exception(self.log, exc, f"{url} docs")
+        return doc_list
+
+    async def _extract_description(self, page: Page, detail: Locator, url: str) -> str:
+        """Lit la description courte (article ou variante selon disponibilité)."""
+        try:
+            if await detail.locator(Selectors.product_description_article).count() > 0:
+                return clean_text(
+                    await page.locator(Selectors.product_description_article).inner_text()
+                )
+            return clean_text(
+                await page.locator(Selectors.product_description_variant).inner_text()
+            )
+        except Exception as exc:
+            log_exception(self.log, exc, f"{url} description")
+            return ""
+
+    async def _extract_caracteristiques(self, page: Page, url: str) -> dict[str, str]:
+        """Extrait le bloc de caractéristiques techniques."""
+        caracteristiques: dict[str, str] = {}
+        try:
+            long_sel = Selectors.product_attributes_block
+            if await page.locator(long_sel).count() == 0:
+                return caracteristiques
+            carac_sel = f"{long_sel} {Selectors.product_attributes_row}"
+            for car in await page.locator(carac_sel).all():
+                b_el, span_el = car.locator("b"), car.locator("span")
+                if await b_el.count() > 0 and await span_el.count() > 0:
+                    caracteristiques[clean_text(await b_el.inner_text())] = (
+                        clean_text(await span_el.inner_text())
+                    )
+        except Exception as exc:
+            log_exception(self.log, exc, f"{url} caractéristiques")
+        return caracteristiques
+
+    async def _extract_declinaisons(
+        self, page: Page, detail: Locator, url: str, ref: str, nb_rows: int
+    ) -> tuple[list[str], bool, int | None, bool, str]:
+        """Extrait les valeurs de déclinaison. Retourne (decli_value, is_combination, index_combination, update_current_index, ref_lier)."""
+        decli_value: list[str] = []
+        is_combination = False
+        index_combination: int | None = None
+        update_current_index = False
+        ref_lier = ""
+        try:
+            var_carac_sel = Selectors.product_combination_values
+            if nb_rows <= 1 or await detail.locator(var_carac_sel).count() == 0:
+                return decli_value, is_combination, index_combination, update_current_index, ref_lier
+            all_refs = await page.locator(
+                Selectors.product_reference_fournisseur
+            ).all_inner_texts()
+            # La deuxième moitié correspond aux refs visibles (hors doublons DOM)
+            group_ref = all_refs[len(all_refs) // 2:]
+            if ref in group_ref:
+                group_ref.remove(ref)
+            index_combination = None
+            update_current_index = True
+            is_combination = True
+            carac_divs = detail.locator(var_carac_sel)
+            for i in range(await carac_divs.count()):
+                div = carac_divs.nth(i)
+                if await div.locator("b").count() == 1 and await div.locator("span").count() == 1:
+                    key = clean_text(await div.locator("b").inner_text())
+                    val = clean_text(await div.locator("span").inner_text())
+                    decli_value.append(f"{key}:{val}")
+            ref_lier = "|".join(group_ref)
+        except Exception as exc:
+            log_exception(self.log, exc, f"{url} déclinaisons")
+        return decli_value, is_combination, index_combination, update_current_index, ref_lier
+
+    async def _extract_detail_panel(
+        self, page: Page, row: Locator, url: str, ref: str, nb_rows: int
+    ) -> tuple[str, str, str, dict[str, str], list[str], bool, int | None, bool, str]:
+        """Lit le panneau de détail (EAN, réf fabricant, description, caractéristiques, déclinaisons).
+
+        Retourne (ean, four, desc, caracteristiques, decli_value, is_combination, index_combination, update_current_index, ref_lier).
+        """
+        ean = four = desc = ""
+        caracteristiques: dict[str, str] = {}
+        decli_value: list[str] = []
+        is_combination = False
+        index_combination: int | None = None
+        update_current_index = False
+        ref_lier = ""
+        try:
+            row_id = await row.get_attribute("data-id")
+            detail = page.locator(Selectors.detail_panel_template.format(row_id=row_id))
+            ean  = clean_text(await detail.locator(Selectors.product_ean).inner_text())
+            four = clean_text(await detail.locator(Selectors.product_reference_fabricant).inner_text())
+            desc = await self._extract_description(page, detail, url)
+            caracteristiques = await self._extract_caracteristiques(page, url)
+            decli_value, is_combination, index_combination, update_current_index, ref_lier = (
+                await self._extract_declinaisons(page, detail, url, ref, nb_rows)
+            )
+        except Exception as exc:
+            log_exception(self.log, exc, f"{url} panneau détail")
+        return ean, four, desc, caracteristiques, decli_value, is_combination, index_combination, update_current_index, ref_lier
 
     # ─── Extraction d'une ligne variante ──────────────────────────────────────
 
@@ -356,9 +511,7 @@ class SetinProductScraper(BaseScraper):
         # --- Titre ---
         title = ""
         try:
-            title = clean_text(
-                await row.locator(Selectors.product_designation).inner_text()
-            )
+            title = clean_text(await row.locator(Selectors.product_designation).inner_text())
         except Exception as exc:
             log_exception(self.log, exc, f"{url} titre")
 
@@ -366,9 +519,7 @@ class SetinProductScraper(BaseScraper):
         ref = ""
         try:
             await page.wait_for_selector(Selectors.product_reference_fournisseur, timeout=1000)
-            ref = clean_text(
-                await row.locator(Selectors.product_reference_fournisseur).inner_text()
-            )
+            ref = clean_text(await row.locator(Selectors.product_reference_fournisseur).inner_text())
             if ref:
                 grp_ref.append(ref)
         except Exception as exc:
@@ -377,8 +528,9 @@ class SetinProductScraper(BaseScraper):
         # --- Prix ---
         prix = ""
         try:
-            raw = await page.locator(Selectors.product_price_ht).first.inner_text()
-            prix = clean_text(raw.replace("€", ""))
+            prix = clean_text(
+                (await page.locator(Selectors.product_price_ht).first.inner_text()).replace("€", "")
+            )
         except Exception as exc:
             log_exception(self.log, exc, f"{url} prix")
 
@@ -388,176 +540,44 @@ class SetinProductScraper(BaseScraper):
             strike_loc = page.locator(Selectors.product_promotion)
             if await strike_loc.count() > 0:
                 reduc = prix
-                prix = clean_text(
-                    (await strike_loc.first.inner_text()).replace("€", "")
-                )
+                prix = clean_text((await strike_loc.first.inner_text()).replace("€", ""))
         except Exception as exc:
             log_exception(self.log, exc, f"{url} réduction")
 
         # --- Éco-taxe ---
         eco_tax = ""
         try:
-            raw = await page.locator(Selectors.product_eco_taxe).first.inner_text()
-            eco_tax = clean_text(raw.replace("€", ""))
+            eco_tax = clean_text(
+                (await page.locator(Selectors.product_eco_taxe).first.inner_text()).replace("€", "")
+            )
         except Exception as exc:
             log_exception(self.log, exc, f"{url} eco_tax")
 
         # --- Image variante ---
         image = ""
         try:
-            image = await row.locator(Selectors.product_image_url).get_attribute(
-                "src"
-            ) or ""
+            image = await row.locator(Selectors.product_image_url).get_attribute("src") or ""
         except Exception as exc:
             log_exception(self.log, exc, f"{url} image")
-
-        # --- Statut stock ---
-        # L'élément n'est visible qu'après sélection de la variante + trigger quantité
-        stock_status = ""
-        try:
-            stock_loc = page.locator(Selectors.product_stock_status)
-            if await stock_loc.count() == 0:
-                stock_loc = row.locator(Selectors.product_stock_status)
-            try:
-                await stock_loc.first.wait_for(state="visible", timeout=3000)
-            except PlaywrightTimeout:
-                pass
-            texts = await stock_loc.all_inner_texts()
-            if not any(t.strip() for t in texts):
-                alt_loc = row.locator(Selectors.product_stock_status_alt)
-                if await alt_loc.count() > 0:
-                    texts = await alt_loc.all_inner_texts()
-            stock_status = ", ".join(t.strip() for t in texts if t.strip())
-        except Exception as exc:
-            log_exception(self.log, exc, f"{url} stock_status")
 
         # --- Marque ---
         marque, img_marque = "", ""
         try:
             brand_el = page.locator(Selectors.product_brand)
-            marque = await brand_el.get_attribute("title") or ""
+            marque    = await brand_el.get_attribute("title") or ""
             img_marque = await brand_el.get_attribute("src") or ""
         except Exception as exc:
             log_exception(self.log, exc, f"{url} marque")
 
-        # --- Documents ---
-        doc_list: list[str] = []
-        try:
-            doc_handles: list[ElementHandle] = await page.locator(
-                Selectors.product_docs_url
-            ).element_handles()
-            for doc in doc_handles:
-                href = await doc.get_attribute("href")
-                if href:
-                    doc_list.append(href)
-        except Exception as exc:
-            log_exception(self.log, exc, f"{url} docs")
+        # --- Champs délégués ---
+        stock_status = await self._extract_stock_status(page, row, url)
+        doc_list     = await self._extract_docs(page, url)
+        cdt          = await self._get_conditionnement(row)
 
-        # --- Conditionnement ---
-        cdt = await self._get_conditionnement(row)
+        ean, four, desc, caracteristiques, decli_value, is_combination, index_combination, update_current_index, ref_lier = (
+            await self._extract_detail_panel(page, row, url, ref, nb_rows)
+        )
 
-        # --- Panneau de détail (EAN, ref fournisseur, description, caractéristiques) ---
-        caracteristiques: dict[str, str] = {}
-        desc = ""
-        ean = ""
-        four = ""
-        decli_value: list[str] = []
-        is_combination = False
-        index_combination: int | None = None
-        update_current_index = False
-        ref_lier = ""
-
-        try:
-            row_id = await row.get_attribute("data-id")
-            detail_sel = Selectors.detail_panel_template.format(
-                row_id=row_id
-            )
-            detail = page.locator(detail_sel)
-
-            ean = clean_text(
-                await detail.locator(Selectors.product_ean).inner_text()
-            )
-            four = clean_text(
-                await detail.locator(Selectors.product_reference_fabricant).inner_text()
-            )
-
-            # Description courte
-            try:
-                if (
-                    await detail.locator(
-                        Selectors.product_description_article
-                    ).count()
-                    > 0
-                ):
-                    desc = clean_text(
-                        await page.locator(
-                            Selectors.product_description_article
-                        ).inner_text()
-                    )
-                else:
-                    desc = clean_text(
-                        await page.locator(
-                            Selectors.product_description_variant
-                        ).inner_text()
-                    )
-            except Exception as exc:
-                log_exception(self.log, exc, f"{url} description")
-
-            # Caractéristiques de la description longue
-            try:
-                long_sel = Selectors.product_attributes_block
-                if await page.locator(long_sel).count() > 0:
-                    carac_sel = (
-                        f"{long_sel} {Selectors.product_attributes_row}"
-                    )
-                    for car in await page.locator(carac_sel).all():
-                        b_el = car.locator("b")
-                        span_el = car.locator("span")
-                        if await b_el.count() > 0 and await span_el.count() > 0:
-                            nom = clean_text(await b_el.inner_text())
-                            val = clean_text(await span_el.inner_text())
-                            caracteristiques[nom] = val
-            except Exception as exc:
-                log_exception(self.log, exc, f"{url} caractéristiques")
-
-            # Déclinaisons / combinaisons
-            try:
-                var_carac_sel = Selectors.product_combination_values
-                if (
-                    nb_rows > 1
-                    and await detail.locator(var_carac_sel).count() > 0
-                ):
-                    all_refs = await page.locator(
-                        Selectors.product_reference_fournisseur
-                    ).all_inner_texts()
-                    # La deuxième moitié correspond aux refs visibles (hors doublons DOM)
-                    group_ref = all_refs[len(all_refs) // 2 :]
-                    if ref in group_ref:
-                        group_ref.remove(ref)
-
-                    index_combination = None
-                    update_current_index = True
-                    is_combination = True
-
-                    carac_divs = detail.locator(var_carac_sel)
-                    for i in range(await carac_divs.count()):
-                        div = carac_divs.nth(i)
-                        if (
-                            await div.locator("b").count() == 1
-                            and await div.locator("span").count() == 1
-                        ):
-                            key = clean_text(await div.locator("b").inner_text())
-                            val = clean_text(await div.locator("span").inner_text())
-                            decli_value.append(f"{key}:{val}")
-
-                    ref_lier = "|".join(group_ref)
-            except Exception as exc:
-                log_exception(self.log, exc, f"{url} déclinaisons")
-
-        except Exception as exc:
-            log_exception(self.log, exc, f"{url} panneau détail")
-
-        # Cross-sell pour CE variant spécifique (état de la page au moment de la sélection)
         cross_sell_row = await self._get_cross_sell(page)
 
         produit = {
@@ -573,9 +593,7 @@ class SetinProductScraper(BaseScraper):
             "IndexCombination": index_combination,
             "IsCombination": is_combination,
             "combinationValues": "||".join(decli_value),
-            "caractéristiques": "||".join(
-                f"{k}:{v}" for k, v in caracteristiques.items()
-            ),
+            "caractéristiques": "||".join(f"{k}:{v}" for k, v in caracteristiques.items()),
             "parent": grp_ref[0] if grp_ref else "",
             "prix": prix,
             "eco_tax": eco_tax,
@@ -671,93 +689,82 @@ class SetinProductScraper(BaseScraper):
             log_exception(self.log, exc, f"resolve product url {url}")
         return None
 
-    async def _collect_product_urls_from_orders(self, page: Page) -> list[str]:
-        """Collecte les URLs produit via les commandes dans la plage de dates."""
-        if not hasattr(self, "_date_from") or not hasattr(self, "_date_to"):
-            self.log.error("Plage de dates non configurée pour le mode commandes")
-            return []
-
-        product_urls: set[str] = set()
+    async def _navigate_to_orders_page(self, page: Page) -> bool:
+        """Navigue vers la page commandes et résout le sélecteur de lignes. Retourne False si introuvable."""
         await page.goto(Selectors.ORDERS_URL)
         await page.wait_for_load_state("domcontentloaded")
         try:
             await page.locator(Selectors.page_loader).wait_for(state="hidden", timeout=10000)
         except Exception:
             pass
-
         self._order_row_selector = await self._resolve_order_row_selector(page)  # type: ignore[attr-defined]
         if not self._order_row_selector:
             self.log.warning("Impossible de trouver les lignes commande")
-            return []
+            return False
+        return True
 
-        current_page = 1
-        while current_page <= self._max_pages:  # type: ignore[attr-defined]
-            order_elements = await page.locator(self._order_row_selector).all()
-            if not order_elements:
-                break
+    async def _collect_article_urls(self, new_page: Page) -> set[str]:
+        """Extrait les URLs produit depuis la page de détail d'une commande."""
+        urls: set[str] = set()
+        articles = new_page.locator(Selectors.order_product_articles)
+        for i in range(await articles.count()):
+            block = articles.nth(i)
+            ref = clean_text(await block.locator(Selectors.order_product_text).inner_text())
+            prod_link = block.locator("a[href*='fiche'], a[href*='article'], a[href*='produit']")
+            if await prod_link.count() > 0:
+                h = await prod_link.first.get_attribute("href") or ""
+                if h:
+                    full = h if h.startswith("http") else f"{Selectors.BASE_URL.rstrip('/')}/{h.lstrip('/')}"
+                    urls.add(full)
+            elif ref:
+                urls.add(f"{Selectors.BASE_URL}recherche/?recherche={quote(ref)}")
+        return urls
 
-            stop_by_date = False
-            for order_el in order_elements:
-                order_date = await self._parse_order_date(order_el)  # type: ignore[attr-defined]
-                if order_date is None:
-                    continue
-                if order_date > self._date_to:
-                    continue
-                if order_date < self._date_from:
-                    stop_by_date = True
-                    break
-
-                link_el = order_el.locator(Selectors.order_link)
-                href = await link_el.get_attribute("href") or ""
-                if not href:
-                    continue
-                detail_url = f"{Selectors.BASE_URL}dhtml/{href.lstrip('/')}"
-                new_page = None
+    async def _fetch_order_product_urls(self, page: Page, detail_url: str) -> set[str]:
+        """Ouvre la page de détail d'une commande, collecte les URLs produit et ferme la page."""
+        new_page = None
+        try:
+            new_page = await page.context.new_page()
+            await new_page.goto(detail_url)
+            await new_page.wait_for_load_state("domcontentloaded")
+            return await self._collect_article_urls(new_page)
+        except Exception as exc:
+            log_exception(self.log, exc, f"détail commande {detail_url}")
+            return set()
+        finally:
+            if new_page:
                 try:
-                    new_page = await page.context.new_page()
-                    await new_page.goto(detail_url)
-                    await new_page.wait_for_load_state("domcontentloaded")
-                    articles = new_page.locator(Selectors.order_product_articles)
-                    n = await articles.count()
-                    for i in range(n):
-                        block = articles.nth(i)
-                        ref = clean_text(
-                            await block.locator(Selectors.order_product_text).inner_text()
-                        )
-                        prod_link = block.locator(
-                            "a[href*='fiche'], a[href*='article'], a[href*='produit']"
-                        )
-                        if await prod_link.count() > 0:
-                            h = await prod_link.first.get_attribute("href") or ""
-                            if h:
-                                full = (
-                                    h
-                                    if h.startswith("http")
-                                    else f"{Selectors.BASE_URL.rstrip('/')}/{h.lstrip('/')}"
-                                )
-                                product_urls.add(full)
-                        elif ref:
-                            product_urls.add(
-                                f"{Selectors.BASE_URL}recherche/?recherche={quote(ref)}"
-                            )
-                except Exception as exc:
-                    log_exception(self.log, exc, f"détail commande {detail_url}")
-                finally:
-                    if new_page:
-                        try:
-                            await new_page.close()
-                        except Exception:
-                            pass
+                    await new_page.close()
+                except Exception:
+                    pass
 
-            if stop_by_date:
-                break
-            first_id = await self._first_order_id(page)  # type: ignore[attr-defined]
-            if not await self._has_next_orders_page(page):  # type: ignore[attr-defined]
-                break
-            if not await self._go_to_next_orders_page(page, first_id):  # type: ignore[attr-defined]
-                break
-            current_page += 1
+    async def _get_order_detail_url(self, order_el: Locator) -> str | None:
+        """Construit l'URL de détail d'une ligne commande. Retourne None si le href est absent."""
+        href = await order_el.locator(Selectors.order_link).get_attribute("href") or ""
+        if not href:
+            return None
+        return f"{Selectors.BASE_URL}dhtml/{href.lstrip('/')}"
 
+    async def _process_orders_page(
+        self, page: Page, order_elements: list, product_urls: set[str]
+    ) -> bool:
+        """Traite toutes les lignes commande d'une page. Retourne True si la borne basse de date est atteinte."""
+        for order_el in order_elements:
+            order_date = await self._parse_order_date(order_el)  # type: ignore[attr-defined]
+            if order_date is None:
+                continue
+            if order_date > self._date_to:
+                continue
+            if order_date < self._date_from:
+                return True
+            detail_url = await self._get_order_detail_url(order_el)
+            if not detail_url:
+                continue
+            product_urls.update(await self._fetch_order_product_urls(page, detail_url))
+        return False
+
+    async def _resolve_all_search_urls(self, page: Page, product_urls: set[str]) -> list[str]:
+        """Résout les URLs de recherche en URLs de fiche produit directe."""
         resolved: list[str] = []
         for raw_url in product_urls:
             if "recherche" in raw_url.lower():
@@ -766,7 +773,33 @@ class SetinProductScraper(BaseScraper):
                     resolved.append(final)
             else:
                 resolved.append(raw_url)
+        return resolved
 
+    async def _collect_product_urls_from_orders(self, page: Page) -> list[str]:
+        """Collecte les URLs produit via les commandes dans la plage de dates."""
+        if not hasattr(self, "_date_from") or not hasattr(self, "_date_to"):
+            self.log.error("Plage de dates non configurée pour le mode commandes")
+            return []
+
+        if not await self._navigate_to_orders_page(page):
+            return []
+
+        product_urls: set[str] = set()
+        current_page = 1
+        while current_page <= self._max_pages:  # type: ignore[attr-defined]
+            order_elements = await page.locator(self._order_row_selector).all()
+            if not order_elements:
+                break
+            if await self._process_orders_page(page, order_elements, product_urls):
+                break
+            first_id = await self._first_order_id(page)  # type: ignore[attr-defined]
+            if not await self._has_next_orders_page(page):  # type: ignore[attr-defined]
+                break
+            if not await self._go_to_next_orders_page(page, first_id):  # type: ignore[attr-defined]
+                break
+            current_page += 1
+
+        resolved = await self._resolve_all_search_urls(page, product_urls)
         self.log.info(
             "%d URL(s) produit collectée(s) via commandes (%s → %s)",
             len(resolved),

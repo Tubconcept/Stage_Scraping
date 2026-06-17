@@ -46,7 +46,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [3/3] Verification de l'installation...
-uv run python -c "import botasaurus, playwright, bs4, dotenv, selenium; print('  Toutes les dependances sont OK')"
+uv run python -c "import botasaurus, playwright, bs4, dotenv; print('  Toutes les dependances sont OK')"
 if %errorlevel% neq 0 (
     echo.
     echo [ATTENTION] Certaines dependances semblent manquantes.

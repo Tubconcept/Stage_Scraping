@@ -110,11 +110,24 @@ def _fill_and_submit_login(driver: Driver, email: str, password: str) -> None:
                         {"name":"CookiesConsent_required","value":"1","url": URL_SITE}])
     driver.get(LOGIN_URL)
     
-    _wait_for(driver, EMAIL_INPUT)
+    _wait_for(driver, EMAIL_INPUT, timeout=10)
+    time.sleep(1)
     driver.type(EMAIL_INPUT, email)
+    time.sleep(1)
     driver.type(PASSWORD_INPUT, password)
+    time.sleep(2)
+    # Gestion reCAPTCHA — l'iframe est cross-origin, on attend la validation
+    try:
+        if driver.is_element_present('iframe[title*="reCAPTCHA"]'):
+            print("[Legallais] reCAPTCHA détecté — attente de validation automatique...")
+            time.sleep(5)
+            if driver.is_element_present('iframe[title*="reCAPTCHA"]'):
+                print("[Legallais] Veuillez cocher 'Je ne suis pas un robot' dans le navigateur.")
+                time.sleep(25)
+    except Exception:
+        pass
     _click_if_present(driver, LOGIN_BUTTON)
-    _wait_for(driver, BREADCRUMB)
+    _wait_for(driver, BREADCRUMB, timeout=20)
 
 
 def _navigate_to_addresses(driver: Driver) -> None:
@@ -188,7 +201,14 @@ def cleanup_legallais_addresses(driver: Driver, _data=None):
     session_restored = False
     if load_cookies_for_driver(driver):
         driver.get(BASE_URL)
-        if not driver.is_element_present(EMAIL_INPUT):
+        try:
+            driver.wait_for_element(".o-menu__items__list", 5)
+        except Exception:
+            pass
+        # Vérification positive : le lien "Mon compte" n'existe que si connecté
+        if (driver.is_element_present("a[aria-label='Mon compte']")
+                or driver.is_element_present("a[href*='/user/my-account']")
+                or driver.is_element_present("a[href*='/user/account']")):
             print("[Legallais] Session restaurée — connexion ignorée.")
             session_restored = True
         else:

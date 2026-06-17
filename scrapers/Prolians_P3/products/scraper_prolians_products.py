@@ -47,15 +47,24 @@ def extract_sitemap_urls(session, url):
     r = session.get(url)
     r.raise_for_status()
     root = ET.fromstring(r.content)
-    ns = {"ns": "https://www.sitemaps.org/schemas/sitemap/0.9"}
+
+    # Détection automatique du namespace (http:// ou https://, selon le sitemap réel)
+    ns_match = re.match(r'\{([^}]+)\}', root.tag)
+    ns_uri = ns_match.group(1) if ns_match else "http://www.sitemaps.org/schemas/sitemap/0.9"
+    ns = {"ns": ns_uri}
+
     urls = []
 
     if root.tag.endswith("sitemapindex"):
         for sm in root.findall("ns:sitemap", ns):
-            urls.append(sm.find("ns:loc", ns).text)
+            loc = sm.find("ns:loc", ns)
+            if loc is not None:
+                urls.append(loc.text)
     else:
         for u in root.findall("ns:url", ns):
-            urls.append(u.find("ns:loc", ns).text)
+            loc = u.find("ns:loc", ns)
+            if loc is not None:
+                urls.append(loc.text)
 
     return urls
 
@@ -305,6 +314,13 @@ def extract_product_from_dom(page):
         pass
     try:
         data["product_description"] = page.locator(Selectors.description_content).inner_html()
+    except Exception:
+        pass
+    # Ferme le drawer description (drawer React Aria fixe) pour débloquer les clics suivants
+    try:
+        if page.locator('[data-rac][class*="z-drawer"]').count() > 0:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
     except Exception:
         pass
 

@@ -66,6 +66,61 @@ def navigate_to_orders(page):
         pass
 
 
+def _extract_tracking_url(row):
+    """Retourne l'URL de suivi depuis le bouton 'Suivre ma commande', ou None si absent/invalide."""
+    trk_el = row.locator(Selectors.tracking_button)
+    if trk_el.count() == 0:
+        return None
+    href = trk_el.first.get_attribute("href") or ""
+    if not href or href in ("#", ""):
+        return None
+    return href if href.startswith("http") else BASE_URL + href
+
+
+def _parse_row_data(row):
+    """Lit tous les champs d'une ligne commande. Retourne None si la lecture échoue."""
+    try:
+        webref   = row.locator(Selectors.order_webref).inner_text(timeout=3000).strip()
+        date_txt = row.locator(Selectors.order_date).inner_text(timeout=3000).strip()
+        date_cmd = datetime.strptime(date_txt, FORMAT_DATE)
+
+        internalref_el = row.locator(Selectors.order_internalref)
+        internalref    = internalref_el.inner_text(timeout=3000).strip() if internalref_el.count() > 0 else ""
+
+        status_el  = row.locator(Selectors.order_status)
+        status_txt = status_el.inner_text(timeout=3000).strip() if status_el.count() > 0 else ""
+
+        return {
+            "webref":       webref,
+            "date_cmd":     date_cmd,
+            "internalref":  internalref,
+            "status":       status_txt,
+            "tracking_url": _extract_tracking_url(row),
+        }
+    except Exception as e:
+        log.warning(f"Erreur lecture ligne : {e}")
+        return None
+
+
+def _navigate_next_page(page):
+    """Clique sur 'page suivante' et attend le chargement. Retourne False si dernière page."""
+    next_btn = page.locator(Selectors.next_page)
+    if next_btn.count() == 0 or next_btn.get_attribute("disabled") is not None:
+        log.debug("Dernière page atteinte")
+        return False
+    first_ref = page.locator(Selectors.order_webref).first.inner_text(timeout=3000).strip()
+    next_btn.click()
+    page.wait_for_timeout(2000)
+    for _ in range(10):
+        try:
+            if page.locator(Selectors.order_webref).first.inner_text(timeout=1000).strip() != first_ref:
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(500)
+    return True
+
+
 def collect_orders_with_tracking(page, date_inf, date_sup):
     """
     Collecte les commandes dans la fenêtre [date_inf, date_sup] + URL de suivi.
@@ -86,67 +141,30 @@ def collect_orders_with_tracking(page, date_inf, date_sup):
 
         stop = False
         for row in rows:
-            try:
-                webref   = row.locator(Selectors.order_webref).inner_text(timeout=3000).strip()
-                date_txt = row.locator(Selectors.order_date).inner_text(timeout=3000).strip()
-                date_cmd = datetime.strptime(date_txt, FORMAT_DATE)
-
-                internalref_el = row.locator(Selectors.order_internalref)
-                internalref    = internalref_el.inner_text(timeout=3000).strip() if internalref_el.count() > 0 else ""
-
-                status_el  = row.locator(Selectors.order_status)
-                status_txt = status_el.inner_text(timeout=3000).strip() if status_el.count() > 0 else ""
-
-                # Lien "Suivre ma commande" dans la ligne du tableau
-                trk_el  = row.locator(Selectors.tracking_button)
-                trk_url = None
-                if trk_el.count() > 0:
-                    href = trk_el.first.get_attribute("href") or ""
-                    if href and href not in ("#", ""):
-                        trk_url = href if href.startswith("http") else BASE_URL + href
-
-            except Exception as e:
-                log.warning(f"Erreur lecture ligne : {e}")
+            data = _parse_row_data(row)
+            if data is None:
                 continue
-
-            # Ignore les commandes trop récentes (hors fenêtre haute)
-            if date_cmd.date() > sup:
+            if data["date_cmd"].date() > sup:
                 continue
-            # Commande trop ancienne → on a parcouru toute la plage utile
-            if date_cmd.date() < inf:
+            if data["date_cmd"].date() < inf:
                 stop = True
                 break
-
-            if webref not in seen:
-                seen.add(webref)
+            if data["webref"] not in seen:
+                seen.add(data["webref"])
                 orders.append({
-                    "webref":       webref,
-                    "internalref":  internalref,
-                    "date":         date_cmd.strftime(FORMAT_DATE),
-                    "status":       status_txt,
-                    "tracking_url": trk_url,
+                    "webref":       data["webref"],
+                    "internalref":  data["internalref"],
+                    "date":         data["date_cmd"].strftime(FORMAT_DATE),
+                    "status":       data["status"],
+                    "tracking_url": data["tracking_url"],
                 })
-                tag = "suivi" if trk_url else "sans suivi"
-                log.debug(f"  {webref} ({internalref}) {date_cmd.date()} [{tag}]")
+                tag = "suivi" if data["tracking_url"] else "sans suivi"
+                log.debug(f"  {data['webref']} ({data['internalref']}) {data['date_cmd'].date()} [{tag}]")
 
         if stop:
             break
-
-        next_btn = page.locator(Selectors.next_page)
-        if next_btn.count() == 0 or next_btn.get_attribute("disabled") is not None:
-            log.debug("Dernière page atteinte")
+        if not _navigate_next_page(page):
             break
-
-        first_ref = page.locator(Selectors.order_webref).first.inner_text(timeout=3000).strip()
-        next_btn.click()
-        page.wait_for_timeout(2000)
-        for _ in range(10):
-            try:
-                if page.locator(Selectors.order_webref).first.inner_text(timeout=1000).strip() != first_ref:
-                    break
-            except Exception:
-                pass
-            page.wait_for_timeout(500)
 
     return orders
 
