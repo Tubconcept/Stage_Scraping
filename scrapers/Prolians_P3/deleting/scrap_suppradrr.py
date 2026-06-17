@@ -39,7 +39,7 @@ def anti_popup(page: Page):
     """Ferme la bannière cookies / modale « Tout accepter » si présente."""
     try:
         page.locator(f"xpath={Selectors.accept_all_xpath}").click(timeout=3000)
-    except:
+    except Exception:
         pass
 
 
@@ -47,7 +47,7 @@ def anti_popup(page: Page):
 # SUPPRESSION DES ADRESSES
 # =============================
 
-def supprAddr(page: Page):
+def suppr_addr(page: Page):
     """
     Parcourt les cartes d'adresse et déclenche la suppression une par une.
 
@@ -99,7 +99,7 @@ def main():
         page.goto(f"{BASE_URL}/customer/addresses")
         # Attente initiale : chargement React des cartes adresse
         time.sleep(8)
-        supprAddr(page)
+        suppr_addr(page)
 
         browser.close()
 

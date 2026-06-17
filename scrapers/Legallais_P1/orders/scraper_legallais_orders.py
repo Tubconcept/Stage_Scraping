@@ -16,17 +16,22 @@ Architecture :
 import sys
 from pathlib import Path
 
+from scrapers.Legallais_P1.orders.scrap_legallais_orders import DATE_FORMAT
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import re
 import html
-import os
-import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+
+from core.logger import setup_logger, log_exception
+
+log   = setup_logger("legallais.orders")
 today = datetime.today().strftime('%Y-%m-%d')
 week  = datetime.today() - timedelta(days=7)
 
@@ -95,39 +100,16 @@ def nettoyer_weight(val):
         return ""
 
 
-# ─── Log ──────────────────────────────────────────────────────────────────────
-
-def log_exception(today, e, commentaire=""):
-    ignorer = [
-        "Target page, context or browser has been closed",
-        "Browser has been closed",
-        "TargetClosedError"
-    ]
-    if any(msg in str(e) for msg in ignorer):
-        return
-    os.makedirs("log", exist_ok=True)
-    with open(f"log/logException-{today}-CMD.txt", "a", encoding="utf-8") as f:
-        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-        f.write(f"{timestamp} {type(e).__name__}: {str(e)}\n")
-        tb = traceback.extract_tb(e.__traceback__)
-        for frame in tb:
-            f.write(f"  File \"{frame.filename}\", line {frame.lineno}, in {frame.name}\n")
-            f.write(f"    {frame.line}\n")
-        if commentaire:
-            f.write(f"Commentaire: {commentaire}\n")
-        f.write("\n")
-
-
 # ─── Authentification / session ───────────────────────────────────────────────
 
 def connexion(page):
     try:
         page.wait_for_selector(ORDER_DATE_CELL, timeout=4000)
-        print(">> Session active détectée")
+        log.info("Session active détectée")
         return
-    except:
+    except PlaywrightTimeoutError:
         pass
-    print(">> Session expirée.")
+    log.warning("Session expirée — reconnexion manuelle requise")
     print("=" * 50)
     print("  Connectez-vous manuellement dans le navigateur.")
     print("  Une fois sur la page des commandes, revenez")
@@ -136,7 +118,7 @@ def connexion(page):
     page.goto(LOGIN_URL)
     input(">> Appuyez sur Entrée après connexion : ")
     page.wait_for_selector("table#DataTables_Table_0 tbody tr", timeout=15000)
-    print(">> Session confirmée — démarrage du scraping")
+    log.info("Session confirmée — démarrage du scraping")
 
 
 # ─── Collecte commandes ───────────────────────────────────────────────────────
@@ -154,36 +136,36 @@ def get_url_cmd(page):
         except Exception:
             date_str = ""
         cmd  = {"link": link, "ref": ref, "date_str": date_str}
-        print(f"Obtention du lien {tr}")
+        log.debug(f"Lien cmd : {ref}")
         cmd_link.append(cmd)
     return cmd_link
 
 
-def check_date(page, DateC):
-    """Compare la date de la dernière ligne visible à DateC (seuil de pagination)."""
+def check_date(page, datec):
+    """Compare la date de la dernière ligne visible à datec (seuil de pagination)."""
     # DataTables trie par date : la dernière ligne = commande la plus ancienne de la page
-    Date_str = page.locator(ORDER_DATE_CELL).last.inner_text()
-    Date = datetime.strptime(Date_str, "%d/%m/%Y")
-    return Date <= DateC
+    date_str = page.locator(ORDER_DATE_CELL).last.inner_text()
+    date = datetime.strptime(date_str, DATE_FORMAT)
+    return date <= datec
 
 
 # ─── Extraction reliquat (défini, non appelé dans la version actuelle) ─────────
 
-def getDateReliquat(page, statut):
+def get_date_reliquat(page, statut):
     if statut.upper() == "RELIQUAT EN ATTENTE":
         produit_block = page.locator(RELIQUAT_PRODUCT_BLOCK).first
         url_produit = produit_block.locator(RELIQUAT_PRODUCT_LINK).get_attribute("href")
         ref_text = produit_block.locator("div.order-details__parcel-designation-ref").inner_text()
         ref_match = re.search(r"Réf\s*:\s*(\d+)", ref_text)
         ref_produit = ref_match.group(1) if ref_match else None
-        print(f"Produit en reliquat détecté : {ref_produit} ({url_produit})")
+        log.debug(f"Produit en reliquat détecté : {ref_produit} ({url_produit})")
         new_page = page.context.new_page()
         new_page.goto(url_produit)
         try:
             stock_label = new_page.locator(RELIQUAT_STOCK_LABEL).inner_text()
             dispo_match = re.search(r"Disponible\s+à\s+partir\s+du\s+(\d{2}/\d{2}/\d{4})", stock_label)
             date_dispo = dispo_match.group(1) if dispo_match else "Date non trouvée"
-        except:
+        except Exception:
             date_dispo = "Date non trouvée ou produit non disponible"
         new_page.close()
         return date_dispo
@@ -193,32 +175,26 @@ def getDateReliquat(page, statut):
 
 # ─── Extraction d'une commande ────────────────────────────────────────────────
 
-def get_Info(page, cmd):
+def get_info(page, cmd):
     try:
         ref_p1  = cmd['link'].split("/")[-1]
         ref_cmd = cmd['ref']
     except Exception as e:
-        log_exception(today, e, "Référencé Erreur")
+        log_exception(log, e, "Référencé Erreur")
         ref_p1  = ""
         ref_cmd = ""
-    print(ref_cmd)
+    log.debug(f"ref_cmd : {ref_cmd}")
     try:
         try:
             header   = page.locator(ORDER_HEADER_LINES)
             date_raw = header.nth(1).inner_text(timeout=3000).replace("Commandée le", "").strip()
-        except:
+        except PlaywrightTimeoutError:
             date_raw = page.locator(ORDER_DATE_TEXT).first.inner_text().strip()
         m = re.search(r"\d{2}/\d{2}/\d{4}", date_raw)
         date_cmd = m.group(0) if m else nettoyer_texte(date_raw)
     except Exception as e:
-        log_exception(today, e, "Erreur de date" + ref_cmd)
-    print(date_cmd)
-    try:
-        titrePrdt = nettoyer_texte(
-            page.locator(PRODUCT_LINK).first.inner_text().replace(',', ".").replace(";", ".").replace(":", "")
-        )
-    except Exception as e:
-        log_exception(today, e, "Erreur de Titre " + ref_cmd)
+        log_exception(log, e, "Erreur de date" + ref_cmd)
+    log.debug(f"date_cmd : {date_cmd}")
 
     prdt_data  = defaultdict(lambda: {"qty": 0, "prix": None, "title": ""})
     final_list = []
@@ -231,7 +207,7 @@ def get_Info(page, cmd):
             # Extraction du titre du produit commandé
             try:
                 title = nettoyer_texte(li.locator(PRODUCT_LINK).first.inner_text(timeout=1000))
-            except Exception:
+            except PlaywrightTimeoutError:
                 title = ""
 
             # Extraction de la référence
@@ -265,17 +241,17 @@ def get_Info(page, cmd):
             f"{ref}:{data['title']}:{data['qty']}"
             for ref, data in prdt_data.items()
         ]
-        print(final_list)
+        log.debug(f"final_list : {final_list}")
 
     except Exception as e:
-        log_exception(today, e, "Erreur de Produits " + ref_cmd)
-    print(prdt_data)
+        log_exception(log, e, "Erreur de Produits " + ref_cmd)
+    log.debug(f"prdt_data : {prdt_data}")
     try:
         statut = nettoyer_texte(page.locator(ORDER_STATUS).inner_text())
     except Exception as e:
-        log_exception(today, e, "Erreur de Statuts " + ref_cmd)
+        log_exception(log, e, "Erreur de Statuts " + ref_cmd)
         statut = None
-    print(statut)
+    log.debug(f"statut : {statut}")
 
     return {
         "ref_p1":    ref_p1,

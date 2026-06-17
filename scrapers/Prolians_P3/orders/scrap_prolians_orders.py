@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from auth.prolians.cookie_manager import ensure_logged_in
 from scrapers.Prolians_P3.orders.scraper_prolians_orders import (
-    navigate_to_orders, collect_orders, get_info, log_exception
+    navigate_to_orders, collect_orders, get_info, log, log_exception
 )
 from db.mariadb_db import init_site_db, insert_order as _db_insert_order
 
@@ -33,7 +33,6 @@ load_dotenv(ROOT / ".env")
 # Compte B2B Prolians (variables d'environnement)
 User     = os.getenv("User_P3")
 Password = os.getenv("Password_P3")
-today    = datetime.today().strftime('%Y-%m-%d')
 
 
 # =============================
@@ -55,7 +54,7 @@ def persist_order(data_dict):
     try:
         _db_insert_order(_prolians_orders_db(), "prolians", row)
     except Exception as exc:
-        print(f"[DB ERROR] persist_order: {exc}")
+        log.error(f"persist_order : {exc}")
 
 
 # Connexion SQLite réutilisée sur toute la session CLI
@@ -76,18 +75,18 @@ def _prolians_orders_db():
 
 def main():
     """Boucle principale : saisie des dates → collecte → détail → MariaDB."""
-    inputSup = input("Fournir la date supérieure de l'intervalle (format d/m/yyyy) : ")
-    inputInf = input("Fournir la date inférieure de l'intervalle (format d/m/yyyy) : ")
+    inputsup = input("Fournir la date supérieure de l'intervalle (format d/m/yyyy) : ")
+    inputinf = input("Fournir la date inférieure de l'intervalle (format d/m/yyyy) : ")
 
     # Borne haute : défaut = aujourd'hui si format invalide
     try:
-        date_sup = datetime.strptime(inputSup, "%d/%m/%Y")
+        date_sup = datetime.strptime(inputsup, "%d/%m/%Y")
     except Exception:
         date_sup = datetime.today()
 
     # Borne basse : défaut = 31 derniers jours si format invalide
     try:
-        date_inf = datetime.strptime(inputInf, "%d/%m/%Y")
+        date_inf = datetime.strptime(inputinf, "%d/%m/%Y")
     except Exception:
         date_inf = datetime.today() - timedelta(days=31)
 
@@ -99,16 +98,16 @@ def main():
         page = context.new_page()
 
         if not ensure_logged_in(page, context, User, Password):
-            print("Connexion échouée — arrêt.")
+            log.error("Connexion Prolians échouée — arrêt.")
             browser.close()
             return
 
         navigate_to_orders(page)
 
-        print(f"\nCollecte des commandes du {date_inf.strftime('%d/%m/%Y')} au {date_sup.strftime('%d/%m/%Y')}")
+        log.info(f"Collecte des commandes du {date_inf.strftime('%d/%m/%Y')} au {date_sup.strftime('%d/%m/%Y')}")
         # Liste légère (webref, date, statut) depuis le tableau paginé
         orders = collect_orders(page, date_inf, date_sup)
-        print(f"\n{len(orders)} commande(s) trouvée(s)")
+        log.info(f"{len(orders)} commande(s) trouvée(s)")
 
         # Une navigation par commande vers la page détail pour les lignes produits
         for order in orders:
@@ -116,12 +115,12 @@ def main():
                 data = get_info(page, order)
                 if data:
                     persist_order(data)
-                    print(f"  {order['webref']} -> MariaDB")
+                    log.debug(f"{order['webref']} -> MariaDB")
             except Exception as e:
-                log_exception(today, e, f"Commande {order['webref']}")
+                log_exception(log, e, f"Commande {order['webref']}")
 
         browser.close()
-        print("\nCommandes enregistrées en MariaDB")
+        log.info("Commandes enregistrées en MariaDB")
 
 
 if __name__ == "__main__":

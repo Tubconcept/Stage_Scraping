@@ -43,6 +43,7 @@ try:
 except ImportError:
     from scrapers.Setin_P5.orders.scraper_setin_orders import SetinOrderScraper as _SetinCSS  # type: ignore[no-redef]
 
+FORMAT_DATE = "%d/%m/%Y"
 
 # ─── Classe orchestratrice ────────────────────────────────────────────────────
 
@@ -111,8 +112,8 @@ class SetinOrderScraper(_SetinCSS):
 
         self.log.info(
             "Setin commandes terminé — %s → %s",
-            self._date_from.strftime("%d/%m/%Y"),
-            self._date_to.strftime("%d/%m/%Y"),
+            self._date_from.strftime(FORMAT_DATE),
+            self._date_to.strftime(FORMAT_DATE),
         )
 
     # ─── Orchestration — scraping de la liste des commandes ───────────────────
@@ -127,8 +128,8 @@ class SetinOrderScraper(_SetinCSS):
 
         self.log.info(
             "Début scraping commandes — %s → %s",
-            self._date_from.strftime("%d/%m/%Y"),
-            self._date_to.strftime("%d/%m/%Y"),
+            self._date_from.strftime(FORMAT_DATE),
+            self._date_to.strftime(FORMAT_DATE),
         )
 
         await page.goto(orders_url)
@@ -206,8 +207,8 @@ class SetinOrderScraper(_SetinCSS):
                 if order_date < self._date_from:
                     self.log.info(
                         "Seuil bas atteint — commande du %s < %s — arrêt pagination",
-                        order_date.strftime("%d/%m/%Y"),
-                        self._date_from.strftime("%d/%m/%Y"),
+                        order_date.strftime(FORMAT_DATE),
+                        self._date_from.strftime(FORMAT_DATE),
                     )
                     stop_by_date = True
                     break
@@ -221,7 +222,7 @@ class SetinOrderScraper(_SetinCSS):
                         self.log.debug(
                             "[p%d] %d/%d — %s (%s) sauvegardée",
                             current_page, i, page_count,
-                            data.get("id_cmd"), order_date.strftime("%d/%m/%Y"),
+                            data.get("id_cmd"), order_date.strftime(FORMAT_DATE),
                         )
                 except Exception as exc:
                     log_exception(self.log, exc, f"Extraction commande p{current_page} l{i}")
@@ -273,7 +274,7 @@ def create_scraper(
 
 
 def _parse_date(s: str) -> datetime:
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+    for fmt in (FORMAT_DATE, "%Y-%m-%d"):
         try:
             return datetime.strptime(s.strip(), fmt)
         except ValueError:

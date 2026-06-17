@@ -16,15 +16,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import re
-import os
-import traceback
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from css_selectors.prolians import Selectors
 from core.utils import clean_text
+from core.logger import setup_logger, log_exception
 
 BASE_URL = Selectors.BASE_URL
-today    = datetime.today().strftime('%Y-%m-%d')
+log      = setup_logger("prolians.tracking")
 
 # Correspondance domaine URL → nom transporteur
 CARRIER_MAP = {
@@ -45,23 +44,7 @@ KNOWN_CARRIERS = list(CARRIER_MAP.values()) + ["DB SCHENKER", "SCHENKER", "COLIS
 # seul le paramètre ?query= reçoit le numéro de colis.
 KUEHNE_TRACKING_URL = "https://mykn.kuehne-nagel.com/public-tracking/shipments?query={n}"
 
-
-# =============================
-# LOG
-# =============================
-
-def log_exception(e, commentaire=""):
-    os.makedirs("log", exist_ok=True)
-    with open(f"log/logException-{today}-TRK.txt", "a", encoding="utf-8") as f:
-        ts = datetime.now().strftime('[%Y-%m-%d %H:%M:%S]')
-        f.write(f"{ts} {type(e).__name__}: {str(e)}\n")
-        for frame in traceback.extract_tb(e.__traceback__):
-            f.write(f"  File \"{frame.filename}\", line {frame.lineno}, in {frame.name}\n")
-            f.write(f"    {frame.line}\n")
-        if commentaire:
-            f.write(f"Commentaire: {commentaire}\n")
-        f.write("\n")
-
+FORMAT_DATE = "%d/%m/%Y" 
 
 # =============================
 # NAVIGATION COMMANDES
@@ -106,7 +89,7 @@ def collect_orders_with_tracking(page, date_inf, date_sup):
             try:
                 webref   = row.locator(Selectors.order_webref).inner_text(timeout=3000).strip()
                 date_txt = row.locator(Selectors.order_date).inner_text(timeout=3000).strip()
-                date_cmd = datetime.strptime(date_txt, "%d/%m/%Y")
+                date_cmd = datetime.strptime(date_txt, FORMAT_DATE)
 
                 internalref_el = row.locator(Selectors.order_internalref)
                 internalref    = internalref_el.inner_text(timeout=3000).strip() if internalref_el.count() > 0 else ""
@@ -123,7 +106,7 @@ def collect_orders_with_tracking(page, date_inf, date_sup):
                         trk_url = href if href.startswith("http") else BASE_URL + href
 
             except Exception as e:
-                print(f"Erreur lecture ligne : {e}")
+                log.warning(f"Erreur lecture ligne : {e}")
                 continue
 
             # Ignore les commandes trop récentes (hors fenêtre haute)
@@ -139,19 +122,19 @@ def collect_orders_with_tracking(page, date_inf, date_sup):
                 orders.append({
                     "webref":       webref,
                     "internalref":  internalref,
-                    "date":         date_cmd.strftime("%d/%m/%Y"),
+                    "date":         date_cmd.strftime(FORMAT_DATE),
                     "status":       status_txt,
                     "tracking_url": trk_url,
                 })
-                tag = "✓ suivi" if trk_url else "— sans suivi"
-                print(f"  {webref} ({internalref}) {date_cmd.date()} [{tag}]")
+                tag = "suivi" if trk_url else "sans suivi"
+                log.debug(f"  {webref} ({internalref}) {date_cmd.date()} [{tag}]")
 
         if stop:
             break
 
         next_btn = page.locator(Selectors.next_page)
         if next_btn.count() == 0 or next_btn.get_attribute("disabled") is not None:
-            print("Dernière page atteinte")
+            log.debug("Dernière page atteinte")
             break
 
         first_ref = page.locator(Selectors.order_webref).first.inner_text(timeout=3000).strip()
@@ -327,7 +310,7 @@ def get_order_detail(page, order: dict) -> dict | None:
         page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
         page.wait_for_timeout(3000)
     except Exception as e:
-        log_exception(e, f"Navigation détail {webref}")
+        log_exception(log, e, f"Navigation détail {webref}")
         return None
 
     # Attendre que React ait rendu les lignes produits (peut prendre quelques secondes)
@@ -385,9 +368,9 @@ def get_order_detail(page, order: dict) -> dict | None:
 
                 prdt_data.append(f"{ref}:{name}:{qty}")
             except Exception as e:
-                log_exception(e, f"Produit {i} de {webref}")
+                log_exception(log, e, f"Produit {i} de {webref}")
     except Exception as e:
-        log_exception(e, f"Produits {webref}")
+        log_exception(log, e, f"Produits {webref}")
 
     # ── 2. Bouton "Suivre ma commande" sur la page de détail ────────────
     tracking_url = order.get("tracking_url")  # déjà capturé depuis la liste
@@ -411,11 +394,11 @@ def get_order_detail(page, order: dict) -> dict | None:
             page.wait_for_timeout(2000)
             carrier, weight, tracking_link, tracking_number = extract_colis_from_page(page)
             if carrier or tracking_link:
-                print(f"    ✓ {carrier} | {weight} | {tracking_number}")
+                log.debug(f"{carrier} | {weight} | {tracking_number}")
             else:
-                print(f"    Aucune info colis trouvée sur {tracking_url}")
+                log.warning(f"Aucune info colis trouvée sur {tracking_url}")
         except Exception as e:
-            log_exception(e, f"Page suivi {webref}")
+            log_exception(log, e, f"Page suivi {webref}")
     else:
         # Pas de lien suivi : cherche un bloc colis sur la fiche détail (déjà chargée)
         try:
@@ -425,7 +408,7 @@ def get_order_detail(page, order: dict) -> dict | None:
 
     # Normalisation date au format DD/MM/YYYY
     try:
-        date_cmd = datetime.strptime(order["date"], "%d/%m/%Y").strftime("%d/%m/%Y")
+        date_cmd = datetime.strptime(order["date"], FORMAT_DATE).strftime(FORMAT_DATE)
     except Exception:
         date_cmd = order.get("date", "")
 

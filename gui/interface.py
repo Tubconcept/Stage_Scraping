@@ -16,14 +16,13 @@ Wrappers _run_*_sync : contournent les input() des scripts CLI pour être appela
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, TclError
 import threading
 import asyncio
 import os
-import shutil
 import tempfile
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from importlib import import_module
 
 from gui.site_config import SITES_CONFIG
@@ -43,7 +42,7 @@ GRAY      = "#757575"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CSV_DIR      = PROJECT_ROOT / "csv"
-
+DATE_FORMAT  = "%d/%m/%Y" 
 
 # ─── Wrapper Legallais products (Botasaurus sync) ────────────────────────────
 
@@ -116,7 +115,7 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
         page.goto(BASE_URL + "/user/order")
         page.wait_for_load_state("domcontentloaded")
 
-        Url_cmd = []
+        url_cmd = []
         try:
             while not check_date(page, date_to):
                 old_text = page.locator("tbody tr").first.inner_text()
@@ -132,10 +131,10 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
             try:
                 row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
             except Exception:
-                Url_cmd.append(cmd)
+                url_cmd.append(cmd)
                 continue
             if date_from <= row_date <= date_to:
-                Url_cmd.append(cmd)
+                url_cmd.append(cmd)
 
         try:
             while not check_date(page, date_from):
@@ -147,16 +146,16 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
                 )
                 for cmd in get_url_cmd(page):
                     try:
-                        row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
+                        row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
                     except Exception:
-                        Url_cmd.append(cmd)
+                        url_cmd.append(cmd)
                         continue
                     if date_from <= row_date <= date_to:
-                        Url_cmd.append(cmd)
+                        url_cmd.append(cmd)
         except Exception as e:
             log_exception(today_str, e, "pagination date début")
 
-        for cmd in Url_cmd:
+        for cmd in url_cmd:
             if should_stop and should_stop():
                 break
             try:
@@ -242,7 +241,7 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime,
 
 
 def _parse_date(s: str) -> datetime:
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+    for fmt in (DATE_FORMAT, "%Y-%m-%d"):
         try:
             return datetime.strptime(s.strip(), fmt)
         except ValueError:
@@ -414,14 +413,28 @@ class ScraperApp(tk.Tk):
         elif key == "suivi":
             row = tk.Frame(frm.input_area, bg=BG)
             row.pack(pady=4)
-            frm.seven_days_var = tk.BooleanVar(value=False)
+            frm.limit_days_var = tk.BooleanVar(value=False)
             tk.Checkbutton(
                 row,
-                text="7 derniers jours seulement",
-                variable=frm.seven_days_var,
+                text="Voulez-vous limiter l'export à un nombre de jours ?",
+                variable=frm.limit_days_var,
                 font=("Helvetica", 10), bg=BG, fg=BLACK,
                 activebackground=BG, selectcolor=WHITE,
+                command=lambda: self._toggle_days_spin(key),
             ).pack(side="left")
+
+            days_row = tk.Frame(frm.input_area, bg=BG)
+            days_row.pack(pady=2)
+            tk.Label(days_row, text="Nombre de jours (1 à 30) :",
+                     font=("Helvetica", 10), bg=BG, fg=BLACK).pack(side="left")
+            frm.days_var = tk.IntVar(value=7)
+            vcmd = (frm.register(self._validate_days_input), "%P")
+            frm.days_spin = tk.Spinbox(
+                days_row, from_=1, to=30, textvariable=frm.days_var,
+                width=5, font=("Helvetica", 10), state="disabled",
+                validate="key", validatecommand=vcmd,
+            )
+            frm.days_spin.pack(side="left", padx=6)
 
         elif key == "commandes":
             for attr, label in [("entry_from", "Date début  (JJ/MM/AAAA) :"),
@@ -524,6 +537,18 @@ class ScraperApp(tk.Tk):
         p.dot.config(fg=GRAY)
         p.lbl_status.config(text=msg, fg=BLACK if msg != "Non lancé" else GRAY)
 
+    def _toggle_days_spin(self, key: str):
+        panel = self._panels[key]
+        panel.days_spin.config(state="normal" if panel.limit_days_var.get() else "disabled")
+
+    @staticmethod
+    def _validate_days_input(value: str) -> bool:
+        if value == "":
+            return True
+        if not value.isdigit():
+            return False
+        return 1 <= int(value) <= 30
+
     def _set_csv_label(self, key: str, path: str):
         if path and os.path.exists(path):
             self._csv_by_action[key] = path
@@ -603,13 +628,23 @@ class ScraperApp(tk.Tk):
         from db.mariadb_db import SITE_PREFIX, export_table_to_csv
         table = f"{SITE_PREFIX[site_key]}_{table_suffix}"
 
-        # Filtre 7 jours — uniquement pour "suivi"
+        # Filtre par nombre de jours — uniquement pour "suivi"
         since = None
+        nb_jours = None
         if key == "suivi":
             panel = self._panels["suivi"]
-            if getattr(panel, "seven_days_var", None) and panel.seven_days_var.get():
-                from datetime import date, timedelta
-                since = date.today() - timedelta(days=7)
+            if getattr(panel, "limit_days_var", None) and panel.limit_days_var.get():
+                try:
+                    nb_jours = int(panel.days_var.get())
+                except (TclError, ValueError):
+                    nb_jours = 0
+                if not (1 <= nb_jours <= 30):
+                    messagebox.showerror(
+                        "Saisie invalide",
+                        "Le nombre de jours doit être un entier compris entre 1 et 30.",
+                    )
+                    return
+                since = date.today() - timedelta(days=nb_jours - 1)
 
         # Export depuis MariaDB vers un fichier temporaire
         try:
@@ -630,7 +665,7 @@ class ScraperApp(tk.Tk):
             messagebox.showinfo(
                 "Aucune donnée",
                 (
-                    f"Aucune donnée pour les 7 derniers jours dans {table}."
+                    f"Aucune donnée pour les {nb_jours} derniers jours dans {table}."
                     if since else
                     f"Aucune donnée dans {table}.\n"
                     "Lancez d'abord le scraper pour peupler la base."
@@ -639,19 +674,13 @@ class ScraperApp(tk.Tk):
             return
 
         run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        suffix = "_7j" if since else ""
+        suffix = f"_{nb_jours}j" if since else ""
         default_name = f"export_{table}{suffix}_{run_ts}.csv"
-        dest = filedialog.asksaveasfilename(
-            initialfile=default_name,
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv"), ("Tous les fichiers", "*.*")],
-        )
-        if dest:
-            shutil.copy2(tmp_path, dest)
-            messagebox.showinfo("Enregistré",
-                                f"{n_rows} ligne(s) exportée(s) :\n{dest}")
-        if tmp_path.exists():
-            tmp_path.unlink()
+        dest = CSV_DIR / default_name
+        tmp_path.replace(dest)
+        self._set_csv_label(key, str(dest))
+        messagebox.showinfo("Enregistré",
+                            f"{n_rows} ligne(s) exportée(s) :\n{dest}")
 
     # ─── Sélecteur de fichier de références ──────────────────────────────────
 
@@ -766,7 +795,7 @@ class ScraperApp(tk.Tk):
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror("Fichier manquant",
+                messagebox.showerror(MESSAGE,
                                      "Veuillez choisir un fichier de références.")
                 return
             self._launch_by_refs(panel.refs_file_path)
@@ -799,15 +828,16 @@ class ScraperApp(tk.Tk):
             self._start_async(key, scraper.run(), scraper, lambda: "")
 
     # ─── Lanceurs Prolians ────────────────────────────────────────────────────
-
+    MESSAGE = "Fichier manquant" 
+    MESSAGE2 = "Veuillez choisir un fichier de références."
     def _launch_prolians(self, key: str):
         panel = self._panels[key]
         cfg   = SITES_CONFIG["Prolians"]
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror("Fichier manquant",
-                                     "Veuillez choisir un fichier de références.")
+                messagebox.showerror(MESSAGE,
+                                     MESSAGE2)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return
@@ -844,8 +874,8 @@ class ScraperApp(tk.Tk):
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror("Fichier manquant",
-                                     "Veuillez choisir un fichier de références.")
+                messagebox.showerror(MESSAGE,
+                                     MESSAGE2)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return
@@ -934,7 +964,7 @@ class ScraperApp(tk.Tk):
                     except Exception:
                         path = ""
                     self.after(0, lambda: self._on_done(key, path, was_running))
-                except BaseException:
+                except Exception:
                     try:
                         self.after(0, lambda: self._on_done(key, "", False))
                     except Exception:
@@ -952,7 +982,7 @@ class ScraperApp(tk.Tk):
         def _worker():
             try:
                 func()
-            except BaseException:
+            except Exception:
                 pass
             finally:
                 try:
@@ -963,7 +993,7 @@ class ScraperApp(tk.Tk):
                     except Exception:
                         path = ""
                     self.after(0, lambda: self._on_done(key, path, was_running))
-                except BaseException:
+                except Exception:
                     # Cas extrême : KeyboardInterrupt injecté une 2e fois dans le finally
                     try:
                         self.after(0, lambda: self._on_done(key, "", False))

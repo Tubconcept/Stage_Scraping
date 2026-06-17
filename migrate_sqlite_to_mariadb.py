@@ -128,9 +128,9 @@ def _batch_insert(
             cur.executemany(sql, batch)
             mconn.commit()
             inserted += cur.rowcount
-        except MySQLError as e:
+        except MySQLError :
             mconn.rollback()
-            _log.error("Batch %d→%d échec sur %s : %s", i, i + len(batch), table, e)
+            _log.exception("Batch %d→%d échec sur %s", i, i + len(batch), table)
             raise
         finally:
             cur.close()
@@ -189,8 +189,8 @@ def main() -> None:
     try:
         mconn = _mariadb_conn()
         _log.info("OK")
-    except MySQLError as e:
-        _log.error("Connexion impossible : %s", e)
+    except MySQLError :
+        _log.exception("Connexion impossible")
         sys.exit(1)
 
     total_rows     = 0

@@ -60,6 +60,7 @@ ADDRESSES_URL_CANDIDATES = [
     # essaye direct par URL si connue (sinon navigation par menu)
     "https://www.legallais.com/user/my-account",  # hypothétique 
 ]
+URL_SITE = "https://www.legallais.com" 
 
 DRY_RUN = True  # True = ne clique pas sur "Supprimer", juste un aperçu
 HEADLESS = False  # Mettez True pour exécution silencieuse une fois validé
@@ -104,9 +105,9 @@ def _click_if_present(driver: Driver, css: str) -> bool:
 def _fill_and_submit_login(driver: Driver, email: str, password: str) -> None:
     assert email and password, "Renseignez LEGALLAIS_EMAIL et LEGALLAIS_PASSWORD"
     driver.enable_human_mode()
-    driver.add_cookies([{"name":"CookiesConsent_ads","value":"true","url": "https://www.legallais.com"},
-                        {"name":"CookiesConsent_individualCustomization","value":"true","url": "https://www.legallais.com"},
-                        {"name":"CookiesConsent_required","value":"1","url": "https://www.legallais.com"}])
+    driver.add_cookies([{"name":"CookiesConsent_ads","value":"true","url": URL_SITE},
+                        {"name":"CookiesConsent_individualCustomization","value":"true","url": URL_SITE},
+                        {"name":"CookiesConsent_required","value":"1","url": URL_SITE}])
     driver.get(LOGIN_URL)
     
     _wait_for(driver, EMAIL_INPUT)
@@ -135,7 +136,7 @@ def cleanup_addresses(driver: Driver):
         # Cible toujours la 3ème carte (nth-child(3)) pour conserver les 2 premières
         try:
             card = driver.select(SEL["address_cards"]+":nth-child(3)")
-        except:
+        except Exception:
             print("nettoyage terminée")
             break
       
@@ -178,9 +179,9 @@ def cleanup_legallais_addresses(driver: Driver, _data=None):
 
     # Cookies de consentement (toujours injectés)
     driver.add_cookies([
-        {"name": "CookiesConsent_ads",                     "value": "true", "url": "https://www.legallais.com"},
-        {"name": "CookiesConsent_individualCustomization",  "value": "true", "url": "https://www.legallais.com"},
-        {"name": "CookiesConsent_required",                "value": "1",    "url": "https://www.legallais.com"},
+        {"name": "CookiesConsent_ads",                     "value": "true", "url": URL_SITE},
+        {"name": "CookiesConsent_individualCustomization",  "value": "true", "url": URL_SITE},
+        {"name": "CookiesConsent_required",                "value": "1",    "url": URL_SITE},
     ])
 
     # Tenter de restaurer la session du jour

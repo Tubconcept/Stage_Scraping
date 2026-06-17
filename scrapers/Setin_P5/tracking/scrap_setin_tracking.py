@@ -44,7 +44,7 @@ try:
 except ImportError:
     from scraper_setin_tracking import SetinTrackingScraper as _SetinCSS  # type: ignore[no-redef]
 
-
+FORMAT_DATE = "%d/%m/%Y"
 # ─── Classe orchestratrice ────────────────────────────────────────────────────
 
 class SetinTrackingScraper(_SetinCSS):
@@ -113,15 +113,14 @@ class SetinTrackingScraper(_SetinCSS):
 
         self.log.info(
             "Setin tracking terminé — %s → %s",
-            self._date_from.strftime("%d/%m/%Y"),
-            self._date_to.strftime("%d/%m/%Y"),
+            self._date_from.strftime(FORMAT_DATE),
+            self._date_to.strftime(FORMAT_DATE),
         )
 
     # ─── Scraping de la liste (boucle principale et décisions métier) ─────────
 
     async def _scrape_all(self, page: Page) -> None:
         """Parcourt le backoffice commandes sur les 7 derniers jours."""
-        orders_url = Selectors.ORDERS_URL
         current_page = 1
         total_saved = 0
         total_skipped_parse = 0
@@ -129,29 +128,10 @@ class SetinTrackingScraper(_SetinCSS):
         self.log.info(
             "Début scraping tracking — fenêtre %d jours, seuil < %s",
             self.DAYS,
-            self._date_from.strftime("%d/%m/%Y"),
+            self._date_from.strftime(FORMAT_DATE),
         )
 
-        await page.goto(orders_url)
-        await page.wait_for_load_state("domcontentloaded")
-        try:
-            await page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
-        try:
-            await page.locator(Selectors.page_loader).wait_for(
-                state="hidden", timeout=10000
-            )
-        except Exception:
-            pass
-
-        self._order_row_selector = await self._resolve_order_row_selector(page)
-        if not self._order_row_selector:
-            current_url = page.url
-            self.log.warning(
-                "Page %d : aucun sélecteur de ligne commande valide trouvé — URL : %s",
-                current_page, current_url,
-            )
+        if not await self._open_orders_list(page):
             return
 
         while current_page <= self._max_pages:
@@ -159,80 +139,31 @@ class SetinTrackingScraper(_SetinCSS):
                 self.log.info("Arrêt demandé — page %d", current_page)
                 break
 
-            try:
-                await page.wait_for_selector(self._order_row_selector, timeout=30_000)
-            except PlaywrightTimeout:
-                current_url = page.url
-                self.log.warning(
-                    "Page %d : sélecteur '%s' introuvable — URL : %s",
-                    current_page, self._order_row_selector, current_url,
-                )
-                break
-
-            order_elements = await page.locator(self._order_row_selector).all()
-            page_count = len(order_elements)
-
-            if page_count == 0:
-                self.log.info("Fin pagination — page %d vide", current_page)
+            order_elements = await self._load_orders_page(page, current_page)
+            if order_elements is None:
                 break
 
             ui_page = await self._get_ui_page_number(page)
             self.log.info(
                 "Page %d (UI: %s) — %d commande(s)",
-                current_page, ui_page or "?", page_count,
+                current_page, ui_page or "?", len(order_elements),
             )
 
-            page_saved = 0
-            stop_by_date = False
-
-            for i, order_el in enumerate(order_elements, 1):
-                if self.should_stop():
-                    stop_by_date = True
-                    break
-
-                order_date = await self._parse_order_date(order_el)
-                if order_date is None:
-                    total_skipped_parse += 1
-                    raw = await self._get_order_date_str(order_el)
-                    self.log.warning("[p%d] Date illisible (%s) — ignorée", current_page, raw)
-                    continue
-
-                if order_date > self._date_to:
-                    continue
-
-                if order_date < self._date_from:
-                    self.log.info(
-                        "Seuil atteint — commande du %s < %s — arrêt",
-                        order_date.strftime("%d/%m/%Y"),
-                        self._date_from.strftime("%d/%m/%Y"),
-                    )
-                    stop_by_date = True
-                    break
-
-                try:
-                    data = await self._extract_order(page, order_el)
-                    if data:
-                        self._save_to_db(data)
-                        page_saved += 1
-                        total_saved += 1
-                except Exception as exc:
-                    log_exception(self.log, exc, f"Extraction tracking p{current_page} l{i}")
+            page_saved, page_skipped, stop_by_date = await self._process_orders(
+                page, order_elements, current_page
+            )
+            total_saved += page_saved
+            total_skipped_parse += page_skipped
 
             self.log.info(
                 "Page %d terminée — %d/%d sauvegardée(s)",
-                current_page, page_saved, page_count,
+                current_page, page_saved, len(order_elements),
             )
 
             if stop_by_date:
                 break
 
-            first_id_before = await self._first_order_id(page)
-            if not await self._has_next_orders_page(page):
-                self.log.info("Fin pagination — dernière page (%d)", current_page)
-                break
-
-            if not await self._go_to_next_orders_page(page, first_id_before):
-                self.log.warning("Pagination bloquée après page %d — arrêt", current_page)
+            if not await self._advance_to_next_page(page, current_page):
                 break
 
             current_page += 1
@@ -241,6 +172,108 @@ class SetinTrackingScraper(_SetinCSS):
             "%d entrée(s) sauvegardée(s) — %d date(s) illisible(s), %d page(s)",
             total_saved, total_skipped_parse, current_page,
         )
+
+    async def _open_orders_list(self, page: Page) -> bool:
+        """Navigue vers la liste commandes et résout le sélecteur de ligne."""
+        await page.goto(Selectors.ORDERS_URL)
+        await page.wait_for_load_state("domcontentloaded")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        try:
+            await page.locator(Selectors.page_loader).wait_for(state="hidden", timeout=10000)
+        except Exception:
+            pass
+
+        self._order_row_selector = await self._resolve_order_row_selector(page)
+        if not self._order_row_selector:
+            self.log.warning(
+                "Page 1 : aucun sélecteur de ligne commande valide trouvé — URL : %s",
+                page.url,
+            )
+            return False
+        return True
+
+    async def _load_orders_page(self, page: Page, current_page: int) -> list | None:
+        """Attend les lignes commande de la page courante, ou None pour arrêter la pagination."""
+        try:
+            await page.wait_for_selector(self._order_row_selector, timeout=30_000)
+        except PlaywrightTimeout:
+            self.log.warning(
+                "Page %d : sélecteur '%s' introuvable — URL : %s",
+                current_page, self._order_row_selector, page.url,
+            )
+            return None
+
+        order_elements = await page.locator(self._order_row_selector).all()
+        if not order_elements:
+            self.log.info("Fin pagination — page %d vide", current_page)
+            return None
+        return order_elements
+
+    async def _process_orders(
+        self, page: Page, order_elements: list, current_page: int
+    ) -> tuple[int, int, bool]:
+        """Traite les lignes commande d'une page. Retourne (sauvées, dates illisibles, arrêt par seuil)."""
+        page_saved = 0
+        skipped_parse = 0
+
+        for i, order_el in enumerate(order_elements, 1):
+            if self.should_stop():
+                return page_saved, skipped_parse, True
+
+            status = await self._process_order_row(page, order_el, current_page, i)
+            if status == "stop":
+                return page_saved, skipped_parse, True
+            if status == "skip_unparseable":
+                skipped_parse += 1
+            elif status == "saved":
+                page_saved += 1
+
+        return page_saved, skipped_parse, False
+
+    async def _process_order_row(self, page: Page, order_el, current_page: int, i: int) -> str:
+        """Traite une ligne commande. Retourne 'saved' / 'skip_unparseable' / 'skip' / 'stop'."""
+        order_date = await self._parse_order_date(order_el)
+        if order_date is None:
+            raw = await self._get_order_date_str(order_el)
+            self.log.warning("[p%d] Date illisible (%s) — ignorée", current_page, raw)
+            return "skip_unparseable"
+
+        if order_date > self._date_to:
+            return "skip"
+
+        if order_date < self._date_from:
+            self.log.info(
+                "Seuil atteint — commande du %s < %s — arrêt",
+                order_date.strftime(FORMAT_DATE),
+                self._date_from.strftime(FORMAT_DATE),
+            )
+            return "stop"
+
+        try:
+            data = await self._extract_order(page, order_el)
+            if data:
+                self._save_to_db(data)
+                return "saved"
+            return "skip"
+        except Exception as exc:
+            log_exception(self.log, exc, f"Extraction tracking p{current_page} l{i}")
+            return "skip"
+
+    async def _advance_to_next_page(self, page: Page, current_page: int) -> bool:
+        """Passe à la page suivante. Retourne False si la pagination doit s'arrêter."""
+        first_id_before = await self._first_order_id(page)
+        if not await self._has_next_orders_page(page):
+            self.log.info("Fin pagination — dernière page (%d)", current_page)
+            return False
+
+        if not await self._go_to_next_orders_page(page, first_id_before):
+            self.log.warning("Pagination bloquée après page %d — arrêt", current_page)
+            return False
+
+        return True
 
     # ─── Persistance SQLite ───────────────────────────────────────────────────
 
@@ -278,7 +311,7 @@ def create_scraper(
 
 
 def _parse_date(s: str) -> datetime:
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+    for fmt in (FORMAT_DATE, "%Y-%m-%d"):
         try:
             return datetime.strptime(s.strip(), fmt)
         except ValueError:

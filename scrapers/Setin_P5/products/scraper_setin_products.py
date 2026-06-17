@@ -789,9 +789,11 @@ class SetinProductScraper(BaseScraper):
         )
         images = produit.get("productImages") or produit.get("image", "")
         is_combo = produit.get("IsCombination", False)
+        variant_ref = produit.get("ref", "")
+        fournisseur_url = f"{source_url}?idvar={variant_ref}" if is_combo and variant_ref else source_url
         return {
             "product_fournisseur": "P5",
-            "product_reference_fournisseur": produit.get("ref", ""),
+            "product_reference_fournisseur": variant_ref,
             "product_ean": produit.get("ean", ""),
             "product_reference_fabricant": produit.get("four", ""),
             "product_brand": produit.get("marque", ""),
@@ -804,7 +806,7 @@ class SetinProductScraper(BaseScraper):
             "product_conditionnement": produit.get("cdt", ""),
             "product_stock_status": _normalize_stock_status(produit.get("stockStatus", "")),
             "product_status": produit.get("product_status", ""),
-            "product_fournisseur_url": source_url,
+            "product_fournisseur_url": fournisseur_url,
             "product_eco_label": produit.get("product_eco_label", ""),
             "product_eco_taxe": produit.get("eco_tax", ""),
             "product_promotion": produit.get("reduc") or "",

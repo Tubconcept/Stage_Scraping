@@ -148,14 +148,16 @@ class BaseScraper:
             return
 
         try:
+            import json
+            import aiofiles
+
             path = Path(path)
             path.parent.mkdir(parents=True, exist_ok=True)
 
             storage = await self._context.storage_state()
-            import json
 
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(storage, f, indent=2)
+            async with aiofiles.open(path, "w", encoding="utf-8") as f:
+                await f.write(json.dumps(storage, indent=2))
 
             self.log.debug(f"État stocké: {path}")
         except Exception as exc:
@@ -188,7 +190,7 @@ class BaseScraper:
         self.log.warning("Arrêt demandé")
         self._stop_requested = True
 
-    # ──────────────────────────────────────────────────────────────────
+
     # Utilitaires
     # ──────────────────────────────────────────────────────────────────
 
