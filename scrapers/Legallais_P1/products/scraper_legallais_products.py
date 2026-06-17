@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 
 load_dotenv(_PROJECT_ROOT / ".env")
 
+URL_SITE = "https://www.legallais.com"
 
 # ─── Classe moteur CSS ────────────────────────────────────────────────────────
 
@@ -59,9 +60,9 @@ class LegallaisScraper:
 
         # Cookies de consentement (toujours injectés)
         d.add_cookies([
-            {"name": "CookiesConsent_ads",                     "value": "true", "url": "https://www.legallais.com"},
-            {"name": "CookiesConsent_individualCustomization",  "value": "true", "url": "https://www.legallais.com"},
-            {"name": "CookiesConsent_required",                "value": "1",    "url": "https://www.legallais.com"},
+            {"name": "CookiesConsent_ads",                     "value": "true", "url": URL_SITE},
+            {"name": "CookiesConsent_individualCustomization",  "value": "true", "url": URL_SITE},
+            {"name": "CookiesConsent_required",                "value": "1",    "url": URL_SITE},
         ])
 
         # Tenter de restaurer la session du jour

@@ -233,3 +233,4 @@ data/imports/
 *.txt
 *.log
 *.bak
+.vscode/*

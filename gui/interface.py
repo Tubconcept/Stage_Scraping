@@ -964,7 +964,7 @@ class ScraperApp(tk.Tk):
                     except Exception:
                         path = ""
                     self.after(0, lambda: self._on_done(key, path, was_running))
-                except BaseException:
+                except Exception:
                     try:
                         self.after(0, lambda: self._on_done(key, "", False))
                     except Exception:
@@ -982,7 +982,7 @@ class ScraperApp(tk.Tk):
         def _worker():
             try:
                 func()
-            except BaseException:
+            except Exception:
                 pass
             finally:
                 try:
@@ -993,7 +993,7 @@ class ScraperApp(tk.Tk):
                     except Exception:
                         path = ""
                     self.after(0, lambda: self._on_done(key, path, was_running))
-                except BaseException:
+                except Exception:
                     # Cas extrême : KeyboardInterrupt injecté une 2e fois dans le finally
                     try:
                         self.after(0, lambda: self._on_done(key, "", False))
