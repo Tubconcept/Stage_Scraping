@@ -145,8 +145,10 @@ async def main() -> None:
             print("Session expirée ou absente — connexion en cours")
             await _connexion(page)
             PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-            with open(storage_path, "w", encoding="utf-8") as f:
-                json.dump(await context.storage_state(), f, indent=2)
+            storage_data = await context.storage_state()
+            await asyncio.to_thread(
+                storage_path.write_text, json.dumps(storage_data, indent=2), "utf-8"
+            )
         else:
             print("Session active — connexion ignorée")
 
@@ -209,8 +211,10 @@ class SetinSupprScraper:
             if not await _is_logged_in(page):
                 await _connexion(page)
                 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-                with open(storage_path, "w", encoding="utf-8") as f:
-                    json.dump(await context.storage_state(), f, indent=2)
+                storage_data = await context.storage_state()
+                await asyncio.to_thread(
+                    storage_path.write_text, json.dumps(storage_data, indent=2), "utf-8"
+                )
 
             await page.goto(Selectors.ADDRESSES_URL)
             await page.wait_for_load_state("domcontentloaded")

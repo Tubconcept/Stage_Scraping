@@ -244,6 +244,66 @@ def _collect_search(driver: Driver, data: dict = None) -> List[Dict]:  # type: i
     return all_products
 
 
+# ─── PHASE 2 : helpers du worker parallèle ────────────────────────────────────
+
+def _assign_combination_index(rows: List[Dict], ok: int) -> None:
+    """Set combinationIndex on every row when the product is a combination."""
+    if rows[0].get("isCombination") != "True":
+        return
+    parent_ref = rows[0].get("parentRef", "")
+    try:
+        grp_idx = resolve_decli_index("legallais", parent_ref)
+    except Exception:
+        grp_idx = ok + 1
+    for _r in rows:
+        _r["combinationIndex"] = grp_idx
+
+
+def _persist_rows(
+    db_conn, rows: List[Dict], item: dict, cat1: str, cat2: str, cat3: str, batch_id: int
+) -> None:
+    """Insert each scraped row into MariaDB, skipping on individual DB errors."""
+    if not db_conn:
+        return
+    for row in rows:
+        try:
+            mapped = _map_to_csv_headers(row, cat1, cat2, cat3)
+            is_combo = str(row.get("isCombination", "False")) == "True"
+            variant_ref = row.get("productRef", "") if is_combo else ""
+            mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
+            insert_product(db_conn, "legallais", mapped)
+        except Exception as _db_exc:
+            log.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
+
+
+def _process_item(
+    scraper, driver, db_conn, item: dict, ok: int, err: int, batch_id: int
+) -> tuple:
+    """Process a single product URL: scrape, index combinations, persist. Returns (ok, err)."""
+    try:
+        driver.get(item["url"])
+        try:
+            driver.wait_for_element("div.c-price.c-price--final", 5)
+        except Exception:
+            pass
+
+        cat1, cat2, cat3 = item["cat1"], item["cat2"], item["cat3"]
+        rows = scraper.scrape_product()
+
+        if rows:
+            _assign_combination_index(rows, ok)
+            _persist_rows(db_conn, rows, item, cat1, cat2, cat3, batch_id)
+            ok += 1
+            log.info(f"[Worker {batch_id}] ✓ {rows[0].get('productRef', '?')} — {len(rows)} ligne(s)")
+        else:
+            log.warning(f"[Worker {batch_id}] ✗ Aucune donnée pour {item['url']}")
+            err += 1
+    except Exception as e:
+        log.error(f"[Worker {batch_id}] Erreur {item['url']}: {e}")
+        err += 1
+    return ok, err
+
+
 # ─── PHASE 2 : scraping parallèle ─────────────────────────────────────────────
 
 @browser(headless=True, parallel=_MAX_PARALLEL)
@@ -251,7 +311,7 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
     """
     Worker parallèle : reçoit un lot de produits {"url", "cat1", "cat2", "cat3"}.
     """
-    batch_id: int      = data["batch_id"]
+    batch_id: int        = data["batch_id"]
     products: List[Dict] = data["products"]
 
     scraper = LegallaisScraper()
@@ -268,43 +328,7 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
     ok, err = 0, 0
 
     for item in products:
-        try:
-            driver.get(item["url"])
-            try:
-                driver.wait_for_element("div.c-price.c-price--final", 5)
-            except Exception:
-                pass
-
-            cat1, cat2, cat3 = item["cat1"], item["cat2"], item["cat3"]
-
-            rows = scraper.scrape_product()
-            if rows:
-                if rows[0].get("isCombination") == "True":
-                    parent_ref = rows[0].get("parentRef", "")
-                    try:
-                        grp_idx = resolve_decli_index("legallais", parent_ref)
-                    except Exception:
-                        grp_idx = ok + 1
-                    for _r in rows:
-                        _r["combinationIndex"] = grp_idx
-                for row in rows:
-                    if db_conn:
-                        try:
-                            mapped = _map_to_csv_headers(row, cat1, cat2, cat3)
-                            is_combo = str(row.get("isCombination", "False")) == "True"
-                            variant_ref = row.get("productRef", "") if is_combo else ""
-                            mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
-                            insert_product(db_conn, "legallais", mapped)
-                        except Exception as _db_exc:
-                            log.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
-                ok += 1
-                log.info(f"[Worker {batch_id}] ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
-            else:
-                log.warning(f"[Worker {batch_id}] ✗ Aucune donnée pour {item['url']}")
-                err += 1
-        except Exception as e:
-            log.error(f"[Worker {batch_id}] Erreur {item['url']}: {e}")
-            err += 1
+        ok, err = _process_item(scraper, driver, db_conn, item, ok, err, batch_id)
 
     if db_conn:
         db_conn.close()
@@ -312,21 +336,163 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
     log.info(f"[Worker {batch_id}] Terminé — {ok} OK, {err} erreurs")
 
 
+# ─── SCRAPING SÉQUENTIEL — helpers (testables car non décorés) ────────────────
+
+def _browse_one_product(
+    driver, scraper, db_conn, href: str,
+    cat1: str, cat2: str, cat3: str,
+    ok: int, err: int, visited_urls: set,
+) -> tuple | None:
+    """Scrape one product URL. Returns (ok, err) or None on session loss."""
+    full_href = _to_full_url(href)
+    if full_href in visited_urls:
+        return ok, err
+    visited_urls.add(full_href)
+    log.info(f"  → Produit {ok + err + 1} : {full_href}")
+    try:
+        driver.get(full_href)
+        rows = scraper.scrape_product()
+        item = {"url": full_href, "cat1": cat1, "cat2": cat2, "cat3": cat3}
+        if rows:
+            _assign_combination_index(rows, ok)
+            _persist_rows(db_conn, rows, item, cat1, cat2, cat3, 0)
+            ok += 1
+            log.info(f"  ✓ [{ok}] {rows[0].get('productRef', '?')} — {len(rows)} ligne(s) écrite(s)")
+        else:
+            err += 1
+            log.warning(f"  ✗ Aucune donnée : {full_href}")
+    except Exception as ex:
+        if _session_perdue(ex):
+            log.error(f"Session perdue — {ok} produits sauvegardés en MariaDB")
+            return None
+        log.error(f"Erreur produit {href}: {ex}")
+        err += 1
+    return ok, err
+
+
+def _browse_one_page(
+    scraper, driver, db_conn, page_num: int,
+    cat1: str, cat2: str, cat3: str,
+    ok: int, err: int, visited_urls: set,
+) -> tuple | None:
+    """Process one listing page. Returns (ok, err) or None on session loss."""
+    if page_num > 1:
+        scraper.go_to_page(page_num)
+    for href in scraper.get_product_links():
+        if _stop_flag:
+            break
+        result = _browse_one_product(
+            driver, scraper, db_conn, href, cat1, cat2, cat3, ok, err, visited_urls
+        )
+        if result is None:
+            return None
+        ok, err = result
+    return ok, err
+
+
+def _browse_category(
+    driver, scraper, db_conn,
+    idx: int, cat_url: str, categories: list,
+    ok: int, err: int, visited_urls: set,
+) -> tuple | None:
+    """Process all pages in one category. Returns (ok, err) or None on session loss."""
+    try:
+        driver.get(_to_full_url(cat_url))
+        scraper.set_items_per_page()
+        try:
+            driver.wait_for_element(SELECTORS["breadcrumb"], 5)
+        except Exception:
+            pass
+        cat1, cat2, cat3 = scraper.get_breadcrumb_categories()
+        log.info(f"  Breadcrumb : {cat1} > {cat2} > {cat3}")
+        try:
+            driver.wait_for_element(SELECTORS["product_card"], 3)
+        except Exception:
+            pass
+        total_pages = scraper.get_page_count()
+        log.info(f"[{idx}/{len(categories)}] {cat1} > {cat2} > {cat3} — {total_pages} page(s)")
+        for page_num in range(1, total_pages + 1):
+            if _stop_flag:
+                break
+            result = _browse_one_page(
+                scraper, driver, db_conn, page_num, cat1, cat2, cat3, ok, err, visited_urls
+            )
+            if result is None:
+                return None
+            ok, err = result
+    except Exception as ex:
+        if _session_perdue(ex):
+            log.error(f"Session perdue — {ok} produits sauvegardés en MariaDB")
+            return None
+        log.error(f"Erreur catégorie {cat_url}: {ex}")
+    return ok, err
+
+
+def _run_browse_mode(driver, scraper, db_conn, category_filter) -> None:
+    """Full browse-mode session: navigate menu, collect and scrape all products."""
+    driver.get(BASE_URL)
+    driver.wait_for_element(".o-menu__items__list")
+    driver.move_mouse_to_element(SELECTOR)
+    driver.click(SELECTOR)
+    categories = [c for c in scraper.get_categories(category_filter) if "guides-de-choix" not in c]
+    log.info(f"{len(categories)} catégories trouvées")
+    visited_urls: set = get_scraped_product_urls(db_conn, "legallais") if db_conn else set()
+    if visited_urls:
+        log.info(f"Reprise — {len(visited_urls)} URL(s) déjà scrappée(s) ignorées")
+    ok, err = 0, 0
+    try:
+        for idx, cat_url in enumerate(categories, 1):
+            if _stop_flag:
+                break
+            result = _browse_category(
+                driver, scraper, db_conn, idx, cat_url, categories, ok, err, visited_urls
+            )
+            if result is None:
+                return
+            ok, err = result
+        log.info(f"Terminé — {ok} produits écrits, {err} erreurs")
+    finally:
+        if db_conn:
+            db_conn.close()
+
+
+def _run_search_mode(driver, scraper, db_conn, products: List[Dict]) -> None:
+    """Full search-mode session: scrape each item in the provided list."""
+    try:
+        for item in products:
+            try:
+                driver.get(item["url"])
+                rows = scraper.scrape_product()
+                if rows:
+                    _assign_combination_index(rows, 0)
+                    c1, c2, c3 = item.get("cat1", ""), item.get("cat2", ""), item.get("cat3", "")
+                    _persist_rows(db_conn, rows, item, c1, c2, c3, 0)
+                    log.info(f"  ✓ {rows[0].get('productRef', '?')} — {len(rows)} ligne(s)")
+                else:
+                    log.warning(f"  ✗ Aucune donnée pour {item.get('url', '')}")
+            except Exception as ex:
+                if _session_perdue(ex):
+                    log.error("Session perdue — arrêt du mode search")
+                    return
+                log.error(f"Erreur {item.get('url', '')}: {ex}")
+    finally:
+        if db_conn:
+            db_conn.close()
+
+
 # ─── SCRAPING SÉQUENTIEL ──────────────────────────────────────────────────────
 
 @browser(headless=False)
 def _scrape_direct(driver: Driver, data: dict = None) -> None:
-    """Scrape séquentiel page par page : pour chaque page de listing, entre dans
-    chaque produit, récupère les infos, écrit dans le CSV, puis passe à la page suivante."""
-    products: List[Dict]       = data.get("products", [])
-    mode: str                  = data.get("mode", "browse")
+    """Scrape séquentiel page par page — délègue à _run_browse_mode ou _run_search_mode."""
+    products: List[Dict]        = data.get("products", [])
+    mode: str                   = data.get("mode", "browse")
     category_filter: str | None = data.get("category_filter")
 
     scraper = LegallaisScraper()
     scraper.set_driver(driver)
     scraper.connexion()
 
-    # Open Legallais DB once for the whole run; seed visited_urls for resume
     db_conn = None
     try:
         db_conn = init_site_db("legallais")
@@ -334,155 +500,33 @@ def _scrape_direct(driver: Driver, data: dict = None) -> None:
         log.warning(f"Base MariaDB Legallais non initialisée : {_exc}")
 
     if mode == "browse":
-        driver.get(BASE_URL)
-        driver.wait_for_element(".o-menu__items__list")
-        driver.move_mouse_to_element(SELECTOR)
-        driver.click(SELECTOR)
-        categories = scraper.get_categories(category_filter)
-        categories = [c for c in categories if "guides-de-choix" not in c]
-        log.info(f"{len(categories)} catégories trouvées")
-
-        ok, err = 0, 0
-        # Seed visited_urls from DB for crash-safe resume
-        visited_urls: set = (
-            get_scraped_product_urls(db_conn, "legallais") if db_conn else set()
-        )
-        if visited_urls:
-            log.info(f"Reprise — {len(visited_urls)} URL(s) déjà scrappée(s) ignorées")
-
-        for idx, cat_url in enumerate(categories, 1):
-            if _stop_flag:
-                break
-            try:
-                full_url = cat_url if cat_url.startswith("http") else BASE_URL + cat_url
-                driver.get(full_url)
-
-                scraper.set_items_per_page()
-                try:
-                    driver.wait_for_element(SELECTORS["breadcrumb"], 5)
-                except Exception:
-                    pass
-                cat1, cat2, cat3 = scraper.get_breadcrumb_categories()
-                log.info(f"  Breadcrumb : {cat1} > {cat2} > {cat3}")
-                try:
-                    driver.wait_for_element(SELECTORS["product_card"], 3)
-                except Exception:
-                    pass
-
-                total_pages = scraper.get_page_count()
-                log.info(
-                    f"[{idx}/{len(categories)}] {cat1} > {cat2} > {cat3}"
-                    f" — {total_pages} page(s)"
-                )
-
-                for page_num in range(1, total_pages + 1):
-                    if _stop_flag:
-                        break
-                    if page_num > 1:
-                        scraper.go_to_page(page_num)
-
-                    for href in scraper.get_product_links():
-                        if _stop_flag:
-                            break
-                        try:
-                            full_href = href if href.startswith("http") else BASE_URL + href
-                            if full_href in visited_urls:
-                                continue
-                            visited_urls.add(full_href)
-
-                            log.info(f"  → Produit {ok + err + 1} : {full_href}")
-                            driver.get(full_href)
-                            rows = scraper.scrape_product()
-                            if rows and rows[0].get("isCombination") == "True":
-                                parent_ref = rows[0].get("parentRef", "")
-                                try:
-                                    grp_idx = resolve_decli_index("legallais", parent_ref)
-                                except Exception:
-                                    grp_idx = ok + 1
-                                for _r in rows:
-                                    _r["combinationIndex"] = grp_idx
-
-                            if rows:
-                                for row in rows:
-                                    if db_conn:
-                                        try:
-                                            mapped = _map_to_csv_headers(row, cat1, cat2, cat3)
-                                            is_combo = str(row.get("isCombination", "False")) == "True"
-                                            variant_ref = row.get("productRef", "") if is_combo else ""
-                                            mapped["product_fournisseur_url"] = _variant_url(full_href, variant_ref)
-                                            insert_product(db_conn, "legallais", mapped)
-                                        except Exception as _db_exc:
-                                            log.debug(f"MariaDB produit ignoré : {_db_exc}")
-                                ok += 1
-                                ref = rows[0].get("productRef", "?")
-                                log.info(f"  ✓ [{ok}] {ref} — {len(rows)} ligne(s) écrite(s)")
-                            else:
-                                err += 1
-                                log.warning(f"  ✗ Aucune donnée : {full_href}")
-
-                        except Exception as ex:
-                            if _session_perdue(ex):
-                                log.error(
-                                    f"Session perdue — {ok} produits sauvegardés en MariaDB"
-                                )
-                                if db_conn:
-                                    db_conn.close()
-                                return
-                            log.error(f"Erreur produit {href}: {ex}")
-                            err += 1
-
-            except Exception as ex:
-                if _session_perdue(ex):
-                    log.error(f"Session perdue — {ok} produits sauvegardés en MariaDB")
-                    if db_conn:
-                        db_conn.close()
-                    return
-                log.error(f"Erreur catégorie {cat_url}: {ex}")
-
-        log.info(f"Terminé — {ok} produits écrits, {err} erreurs")
-        if db_conn:
-            db_conn.close()
-
-    else:  # mode search
-        for item in products:
-            try:
-                driver.get(item["url"])
-                rows = scraper.scrape_product()
-                if rows and rows[0].get("isCombination") == "True":
-                    parent_ref = rows[0].get("parentRef", "")
-                    try:
-                        grp_idx = resolve_decli_index("legallais", parent_ref)
-                    except Exception:
-                        grp_idx = 1
-                    for _r in rows:
-                        _r["combinationIndex"] = grp_idx
-                if rows:
-                    c1, c2, c3 = item.get("cat1", ""), item.get("cat2", ""), item.get("cat3", "")
-                    for row in rows:
-                        if db_conn:
-                            try:
-                                mapped = _map_to_csv_headers(row, c1, c2, c3)
-                                is_combo = str(row.get("isCombination", "False")) == "True"
-                                variant_ref = row.get("productRef", "") if is_combo else ""
-                                mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
-                                insert_product(db_conn, "legallais", mapped)
-                            except Exception as _db_exc:
-                                log.debug(f"MariaDB produit ignoré : {_db_exc}")
-                    log.info(f"  ✓ {rows[0].get('productRef','?')} — {len(rows)} ligne(s)")
-                else:
-                    log.warning(f"  ✗ Aucune donnée pour {item.get('url','')}")
-            except Exception as ex:
-                if _session_perdue(ex):
-                    log.error("Session perdue — arrêt du mode search")
-                    if db_conn:
-                        db_conn.close()
-                    return
-                log.error(f"Erreur {item.get('url','')}: {ex}")
-        if db_conn:
-            db_conn.close()
+        _run_browse_mode(driver, scraper, db_conn, category_filter)
+    else:
+        _run_search_mode(driver, scraper, db_conn, products)
 
 
 # ─── POINT D'ENTRÉE ───────────────────────────────────────────────────────────
+
+def _select_category_interactive() -> str | None:
+    """Prompt the user to pick one category from CATEGORY_NAMES.
+
+    Returns the chosen category name, or None to scrape all categories.
+    """
+    print("\nCatégories disponibles :")
+    for i, c in enumerate(CATEGORY_NAMES, 1):
+        print(f"  {i:2d}. {c}")
+    print(f"  {len(CATEGORY_NAMES) + 1:2d}. Toutes les catégories")
+    while True:
+        try:
+            choice = int(input("\nChoisissez une catégorie (numéro) : ").strip())
+            if 1 <= choice <= len(CATEGORY_NAMES):
+                return CATEGORY_NAMES[choice - 1]
+            if choice == len(CATEGORY_NAMES) + 1:
+                return None
+        except (ValueError, EOFError):
+            pass
+        print(f"  → Entrez un numéro entre 1 et {len(CATEGORY_NAMES) + 1}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -500,23 +544,8 @@ Exemples:
     parser.add_argument("--file", type=str, default="refs.json")
     args = parser.parse_args()
 
-    # ── Sélection interactive de la catégorie ──────────────────────────────────
     if args.mode == "browse" and args.category is None:
-        print("\nCatégories disponibles :")
-        for i, c in enumerate(CATEGORY_NAMES, 1):
-            print(f"  {i:2d}. {c}")
-        print(f"  {len(CATEGORY_NAMES) + 1:2d}. Toutes les catégories")
-        while True:
-            try:
-                choice = int(input("\nChoisissez une catégorie (numéro) : ").strip())
-                if 1 <= choice <= len(CATEGORY_NAMES):
-                    args.category = CATEGORY_NAMES[choice - 1]
-                    break
-                elif choice == len(CATEGORY_NAMES) + 1:
-                    break
-            except (ValueError, EOFError):
-                pass
-            print(f"  → Entrez un numéro entre 1 et {len(CATEGORY_NAMES) + 1}")
+        args.category = _select_category_interactive()
 
     log.info(f"Mode: {args.mode} | Catégorie: {args.category or 'toutes'} | Destination: SQLite legallais.db")
 

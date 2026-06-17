@@ -44,27 +44,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CSV_DIR      = PROJECT_ROOT / "csv"
 DATE_FORMAT  = "%d/%m/%Y" 
 
-# ─── Wrapper Legallais products (Botasaurus sync) ────────────────────────────
-
-def _run_legallais_products_sync(category_filter: str | None) -> str:
-    from dotenv import load_dotenv
-    from core.config import CSV_DIR as _CSV_DIR
-    load_dotenv(PROJECT_ROOT / ".env")
-
-    run_ts       = datetime.today().strftime("%Y-%m-%d_%H-%M")
-    csv_filename = f"scrap_p1_products_{category_filter or 'all'}_{run_ts}.csv"
-
-    from scrapers.Legallais_P1.products.scrap_legallais_products import _scrape_direct
-    _scrape_direct({
-        "products":        [],
-        "csv_filename":    csv_filename,
-        "mode":            "browse",
-        "category_filter": category_filter or None,
-    })
-
-    path = _CSV_DIR / csv_filename
-    return str(path) if path.exists() else ""
-
 
 # ─── Jeton d'arrêt pour les fonctions sync sans BaseScraper ──────────────────
 
@@ -81,23 +60,114 @@ class _SyncStopToken:
         return self._stop
 
 
+# ─── Helpers Legallais orders ─────────────────────────────────────────────────
+
+def _legallais_filter_page_cmds(page, date_from: datetime, date_to: datetime) -> list:
+    from scrapers.Legallais_P1.orders.scraper_legallais_orders import get_url_cmd
+    result: list = []
+    for cmd in get_url_cmd(page):
+        try:
+            row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
+        except Exception:
+            result.append(cmd)
+            continue
+        if date_from <= row_date <= date_to:
+            result.append(cmd)
+    return result
+
+
+def _legallais_collect_orders(
+    page, date_from: datetime, date_to: datetime, today_str: str
+) -> list:
+    from scrapers.Legallais_P1.orders.scraper_legallais_orders import (
+        NEXT_PAGE_BUTTON, check_date, log_exception,
+    )
+    _WAIT_FN = (
+        "(old) => { const r = document.querySelector('tbody tr'); "
+        "return r && r.innerText !== old; }"
+    )
+    url_cmd: list = []
+    try:
+        while not check_date(page, date_to):
+            old = page.locator("tbody tr").first.inner_text()
+            page.locator(NEXT_PAGE_BUTTON).click()
+            page.wait_for_function(_WAIT_FN, arg=old)
+    except Exception as e:
+        log_exception(today_str, e, "pagination date fin")
+    url_cmd.extend(_legallais_filter_page_cmds(page, date_from, date_to))
+    try:
+        while not check_date(page, date_from):
+            old = page.locator("tbody tr").first.inner_text()
+            page.locator(NEXT_PAGE_BUTTON).click()
+            page.wait_for_function(_WAIT_FN, arg=old)
+            url_cmd.extend(_legallais_filter_page_cmds(page, date_from, date_to))
+    except Exception as e:
+        log_exception(today_str, e, "pagination date début")
+    return url_cmd
+
+
+def _save_legallais_order(page, cmd: dict, db_conn, today_str: str) -> None:
+    from db.mariadb_db import insert_order as _db_insert_order
+    from scrapers.Legallais_P1.orders.scraper_legallais_orders import (
+        BASE_URL, get_info, log_exception,
+    )
+    try:
+        page.goto(BASE_URL + cmd["link"])
+        page.wait_for_load_state("domcontentloaded")
+        data = get_info(page, cmd)
+        row = {
+            "id_cmd":     data.get("ref_p1", ""),
+            "ref_cmd":    data.get("ref_cmd", ""),
+            "date_cmd":   data.get("date_cmd", ""),
+            "statut_cmd": data.get("statut", ""),
+            "data_pdt":   data.get("prdt_data", ""),
+        }
+        try:
+            _db_insert_order(db_conn, "legallais", row)
+        except Exception:
+            pass
+    except Exception as e:
+        log_exception(today_str, e, f"commande {cmd.get('link', '?')}")
+
+
+# ─── Helper Prolians orders ───────────────────────────────────────────────────
+
+def _save_prolians_order(page, order: dict, db_conn, today_str: str) -> None:
+    from db.mariadb_db import insert_order as _db_insert_order
+    from scrapers.Prolians_P3.orders.scraper_prolians_orders import get_info, log_exception
+    try:
+        data = get_info(page, order)
+        if not data:
+            return
+        row = {
+            "id_cmd":     data.get("webref", ""),
+            "ref_cmd":    data.get("ref_cmd", ""),
+            "date_cmd":   data.get("date_cmd", ""),
+            "statut_cmd": data.get("statut_cmd", ""),
+            "data_pdt":   data.get("prdt_data", ""),
+        }
+        try:
+            _db_insert_order(db_conn, "prolians", row)
+        except Exception as exc:
+            print(f"[DB ERROR] P3 insert_order: {exc}")
+    except Exception as exc:
+        log_exception(today_str, exc, f"Commande {order.get('webref', '?')}")
+
+
 # ─── Wrapper Legallais orders (Playwright sync, évite input()) ────────────────
 
 def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
-                                should_stop=None) -> str:
+                                should_stop=None) -> None:
     from dotenv import load_dotenv
     from playwright.sync_api import sync_playwright
     from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_session_state
-    from db.mariadb_db import init_site_db, insert_order as _db_insert_order
-    from scrapers.Legallais_P1.orders.scraper_legallais_orders import (
-        BASE_URL, NEXT_PAGE_BUTTON, log_exception, get_url_cmd, check_date, get_info,
-    )
+    from db.mariadb_db import init_site_db
+    from scrapers.Legallais_P1.orders.scraper_legallais_orders import BASE_URL
 
     load_dotenv(PROJECT_ROOT / ".env")
     user      = os.getenv("User_P1", "")
     password  = os.getenv("Password_P1", "")
     today_str = datetime.today().strftime("%Y-%m-%d")
-
     db_conn = init_site_db("legallais")
 
     with sync_playwright() as pw:
@@ -110,87 +180,31 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
         if not ensure_logged_in(page, context, user, password):
             browser.close()
             db_conn.close()
-            return ""
+            return
 
         page.goto(BASE_URL + "/user/order")
         page.wait_for_load_state("domcontentloaded")
-
-        url_cmd = []
-        try:
-            while not check_date(page, date_to):
-                old_text = page.locator("tbody tr").first.inner_text()
-                page.locator(NEXT_PAGE_BUTTON).click()
-                page.wait_for_function(
-                    "(old) => { const r = document.querySelector('tbody tr'); return r && r.innerText !== old; }",
-                    arg=old_text,
-                )
-        except Exception as e:
-            log_exception(today_str, e, "pagination date fin")
-
-        for cmd in get_url_cmd(page):
-            try:
-                row_date = datetime.strptime(cmd["date_str"], "%d/%m/%Y")
-            except Exception:
-                url_cmd.append(cmd)
-                continue
-            if date_from <= row_date <= date_to:
-                url_cmd.append(cmd)
-
-        try:
-            while not check_date(page, date_from):
-                old_text = page.locator("tbody tr").first.inner_text()
-                page.locator(NEXT_PAGE_BUTTON).click()
-                page.wait_for_function(
-                    "(old) => { const r = document.querySelector('tbody tr'); return r && r.innerText !== old; }",
-                    arg=old_text,
-                )
-                for cmd in get_url_cmd(page):
-                    try:
-                        row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
-                    except Exception:
-                        url_cmd.append(cmd)
-                        continue
-                    if date_from <= row_date <= date_to:
-                        url_cmd.append(cmd)
-        except Exception as e:
-            log_exception(today_str, e, "pagination date début")
+        url_cmd = _legallais_collect_orders(page, date_from, date_to, today_str)
 
         for cmd in url_cmd:
             if should_stop and should_stop():
                 break
-            try:
-                page.goto(BASE_URL + cmd["link"])
-                page.wait_for_load_state("domcontentloaded")
-                data = get_info(page, cmd)
-                row = {
-                    "id_cmd":     data.get("ref_p1", ""),
-                    "ref_cmd":    data.get("ref_cmd", ""),
-                    "date_cmd":   data.get("date_cmd", ""),
-                    "statut_cmd": data.get("statut", ""),
-                    "data_pdt":   data.get("prdt_data", ""),
-                }
-                try:
-                    _db_insert_order(db_conn, "legallais", row)
-                except Exception:
-                    pass
-            except Exception as e:
-                log_exception(today_str, e, f"commande {cmd.get('link', '?')}")
+            _save_legallais_order(page, cmd, db_conn, today_str)
 
         browser.close()
     db_conn.close()
-    return ""
 
 
 # ─── Wrapper Prolians orders (évite main() qui utilise input()) ───────────────
 
 def _run_prolians_orders_sync(date_from: datetime, date_to: datetime,
-                               should_stop=None) -> str:
+                               should_stop=None) -> None:
     from dotenv import load_dotenv
     from playwright.sync_api import sync_playwright
     from auth.prolians.cookie_manager import ensure_logged_in
-    from db.mariadb_db import init_site_db, insert_order as _db_insert_order
+    from db.mariadb_db import init_site_db
     from scrapers.Prolians_P3.orders.scraper_prolians_orders import (
-        navigate_to_orders, collect_orders, get_info, log_exception,
+        navigate_to_orders, collect_orders,
     )
 
     load_dotenv(PROJECT_ROOT / ".env")
@@ -210,7 +224,7 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime,
         if not ensure_logged_in(page, ctx, user, password):
             browser.close()
             db_conn.close()
-            return ""
+            return
 
         navigate_to_orders(page)
         orders = collect_orders(page, date_from, date_to)
@@ -218,26 +232,10 @@ def _run_prolians_orders_sync(date_from: datetime, date_to: datetime,
         for order in orders:
             if should_stop and should_stop():
                 break
-            try:
-                data = get_info(page, order)
-                if data:
-                    row = {
-                        "id_cmd":     data.get("webref", ""),
-                        "ref_cmd":    data.get("ref_cmd", ""),
-                        "date_cmd":   data.get("date_cmd", ""),
-                        "statut_cmd": data.get("statut_cmd", ""),
-                        "data_pdt":   data.get("prdt_data", ""),
-                    }
-                    try:
-                        _db_insert_order(db_conn, "prolians", row)
-                    except Exception as exc:
-                        print(f"[DB ERROR] P3 insert_order: {exc}")
-            except Exception as exc:
-                log_exception(today_str, exc, f"Commande {order.get('webref', '?')}")
+            _save_prolians_order(page, order, db_conn, today_str)
 
         browser.close()
     db_conn.close()
-    return ""
 
 
 def _parse_date(s: str) -> datetime:
@@ -248,6 +246,9 @@ def _parse_date(s: str) -> datetime:
             continue
     raise ValueError(f"Format invalide : {s!r}  —  attendu JJ/MM/AAAA")
 
+
+_MSG_MISSING_FILE  = "Fichier manquant"
+_MSG_CHOOSE_FILE   = "Veuillez choisir un fichier de références."
 
 # ─── Application ──────────────────────────────────────────────────────────────
 
@@ -554,6 +555,22 @@ class ScraperApp(tk.Tk):
             self._csv_by_action[key] = path
             self._panels[key].lbl_csv.config(text=f"Fichier CSV : {path}", fg=GREEN_TXT)
 
+    def _validate_days_filter(self) -> tuple[date | None, int | None, bool]:
+        panel = self._panels["suivi"]
+        if not (getattr(panel, "limit_days_var", None) and panel.limit_days_var.get()):
+            return None, None, True
+        try:
+            nb_jours = int(panel.days_var.get())
+        except (TclError, ValueError):
+            nb_jours = 0
+        if not (1 <= nb_jours <= 30):
+            messagebox.showerror(
+                "Saisie invalide",
+                "Le nombre de jours doit être un entier compris entre 1 et 30.",
+            )
+            return None, None, False
+        return date.today() - timedelta(days=nb_jours - 1), nb_jours, True
+
     # ─── Contrôles ────────────────────────────────────────────────────────────
 
     def _launch(self, key: str):
@@ -629,22 +646,11 @@ class ScraperApp(tk.Tk):
         table = f"{SITE_PREFIX[site_key]}_{table_suffix}"
 
         # Filtre par nombre de jours — uniquement pour "suivi"
-        since = None
-        nb_jours = None
+        since, nb_jours = None, None
         if key == "suivi":
-            panel = self._panels["suivi"]
-            if getattr(panel, "limit_days_var", None) and panel.limit_days_var.get():
-                try:
-                    nb_jours = int(panel.days_var.get())
-                except (TclError, ValueError):
-                    nb_jours = 0
-                if not (1 <= nb_jours <= 30):
-                    messagebox.showerror(
-                        "Saisie invalide",
-                        "Le nombre de jours doit être un entier compris entre 1 et 30.",
-                    )
-                    return
-                since = date.today() - timedelta(days=nb_jours - 1)
+            since, nb_jours, ok = self._validate_days_filter()
+            if not ok:
+                return
 
         # Export depuis MariaDB vers un fichier temporaire
         try:
@@ -795,8 +801,7 @@ class ScraperApp(tk.Tk):
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror(MESSAGE,
-                                     "Veuillez choisir un fichier de références.")
+                messagebox.showerror(_MSG_MISSING_FILE, _MSG_CHOOSE_FILE)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return
@@ -828,16 +833,14 @@ class ScraperApp(tk.Tk):
             self._start_async(key, scraper.run(), scraper, lambda: "")
 
     # ─── Lanceurs Prolians ────────────────────────────────────────────────────
-    MESSAGE = "Fichier manquant" 
-    MESSAGE2 = "Veuillez choisir un fichier de références."
+
     def _launch_prolians(self, key: str):
         panel = self._panels[key]
         cfg   = SITES_CONFIG["Prolians"]
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror(MESSAGE,
-                                     MESSAGE2)
+                messagebox.showerror(_MSG_MISSING_FILE, _MSG_CHOOSE_FILE)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return
@@ -874,8 +877,7 @@ class ScraperApp(tk.Tk):
 
         if key == "refs":
             if not getattr(panel, "refs_file_path", None):
-                messagebox.showerror(MESSAGE,
-                                     MESSAGE2)
+                messagebox.showerror(_MSG_MISSING_FILE, _MSG_CHOOSE_FILE)
                 return
             self._launch_by_refs(panel.refs_file_path)
             return

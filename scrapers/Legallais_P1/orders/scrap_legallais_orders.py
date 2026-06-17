@@ -50,6 +50,7 @@ from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_sessio
 # ─── Constantes ───────────────────────────────────────────────────────────────
 LEGALLAIS_EMAIL   = os.getenv("User_P1", "")
 LEGALLAIS_PASSWORD = os.getenv("Password_P1", "")
+DATE_FORMAT = "%d/%m/%Y"
 
 
 # ─── Persistance SQLite ───────────────────────────────────────────────────────
@@ -79,10 +80,10 @@ def _legallais_db():
     return _legallais_conn
 
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
-DATE_FORMAT = "%d/%m/%Y" 
-def main():
-    # Saisie interactive de la plage [DateInf, DateSup] au format JJ/MM/AAAA
+# ─── Helpers d'orchestration ──────────────────────────────────────────────────
+
+def _parse_date_range():
+    """Prompt user for date range and return (dateinf, datesup) with fallback defaults."""
     inputsup = input("Fournisser la date supérieur de l'intervalle de temps veuillez écrire une date au format d/m/yyyy ")
     inputinf = input("Fournisser la date inférieur de l'intervalle de temps veuillez écrire une date au format d/m/yyyy ")
 
@@ -96,13 +97,80 @@ def main():
     except Exception:
         datesup = datetime.today()
 
+    return dateinf, datesup
+
+
+def _next_page(page):
+    """Click the next-page button and wait for the table rows to refresh."""
+    old_text = page.locator("tbody tr").first.inner_text()
+    page.locator(NEXT_PAGE_BUTTON).click()
+    page.wait_for_function(
+        """(oldText) => {
+            const firstRow = document.querySelector('tbody tr');
+            return firstRow && firstRow.innerText !== oldText;
+        }""",
+        arg=old_text,
+    )
+
+
+def _advance_to_page_with_date(page, target_date):
+    """Paginate forward until target_date is visible in the current page."""
+    while not check_date(page, target_date):
+        try:
+            _next_page(page)
+        except Exception as e:
+            log_exception(log, e, "érreur de bouclage pour le tab commandes")
+            break
+
+
+def _collect_page_in_range(page, dateinf, datesup):
+    """Return commands from the current page whose date falls in [dateinf, datesup]."""
+    collected = []
+    for cmd in get_url_cmd(page):
+        try:
+            row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
+        except Exception:
+            collected.append(cmd)
+            continue
+        if dateinf <= row_date <= datesup:
+            collected.append(cmd)
+    return collected
+
+
+def _paginate_and_collect(page, dateinf, datesup, url_cmd):
+    """Phase 2 : paginate until dateinf is reached, collecting matching commands."""
+    while not check_date(page, dateinf):
+        try:
+            _next_page(page)
+            url_cmd.extend(_collect_page_in_range(page, dateinf, datesup))
+        except Exception as e:
+            log_exception(log, e, "érreur de bouclage pour le tab commandes")
+            break
+
+
+def _process_all_cmds(page, url_cmd):
+    """Visit each command URL, extract its data, and persist it to the DB."""
+    for cmd in url_cmd:
+        try:
+            page.goto(BASE_URL + cmd["link"])
+            page.wait_for_load_state("domcontentloaded")
+            commande = get_info(page, cmd)
+            log.debug(f"Commande extraite : {commande}")
+            persist_order(commande)
+        except Exception as e:
+            log_exception(log, e, f"érreur page {cmd['link']}")
+
+
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
+
+def main():
+    dateinf, datesup = _parse_date_range()
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-
-        # Charger la session du jour si disponible (même pattern que Prolians/Setin)
         storage = get_session_state()
         context = browser.new_context(storage_state=storage)
-        page    = context.new_page()
+        page = context.new_page()
         page.set_viewport_size({"width": 1920, "height": 1080})
 
         if not ensure_logged_in(page, context, LEGALLAIS_EMAIL, LEGALLAIS_PASSWORD):
@@ -113,73 +181,12 @@ def main():
         page.goto(BASE_URL + "/user/order")
         page.wait_for_load_state("domcontentloaded")
 
-        url_cmd = []
-        # Phase 1 : avancer dans les pages jusqu'à atteindre DateSup (borne haute)
-        check_time_sup = check_date(page, datesup)
-        while not check_time_sup:
-            try:
-                old_first_row = page.locator("tbody tr").first
-                old_text = old_first_row.inner_text()
-                page.locator(NEXT_PAGE_BUTTON).click()
-                page.wait_for_function(
-                    """(oldText) => {
-                        const firstRow = document.querySelector('tbody tr');
-                        return firstRow && firstRow.innerText !== oldText;
-                    }""",
-                    arg=old_text
-                )
-                check_time_sup = check_date(page, datesup)
-            except Exception as e:
-                log_exception(log, e, "érreur de bouclage pour le tab commandes")
-                break
-
-        for cmd in get_url_cmd(page):
-            try:
-                row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
-            except Exception:
-                url_cmd.append(cmd)
-                continue
-            if dateinf <= row_date <= datesup:
-                url_cmd.append(cmd)
-
-        # Phase 2 : continuer à paginer et collecter tant qu'on n'a pas dépassé dateinf
-        check_time_inf = check_date(page, dateinf)
-        while not check_time_inf:
-            try:
-                old_first_row = page.locator("tbody tr").first
-                old_text = old_first_row.inner_text()
-                page.locator(NEXT_PAGE_BUTTON).click()
-                page.wait_for_function(
-                    """(oldText) => {
-                        const firstRow = document.querySelector('tbody tr');
-                        return firstRow && firstRow.innerText !== oldText;
-                    }""",
-                    arg=old_text
-                )
-                for cmd in get_url_cmd(page):
-                    try:
-                        row_date = datetime.strptime(cmd["date_str"], DATE_FORMAT)
-                    except Exception:
-                        url_cmd.append(cmd)
-                        continue
-                    if dateinf <= row_date <= datesup:
-                        url_cmd.append(cmd)
-                check_time_inf = check_date(page, dateinf)
-            except Exception as e:
-                log_exception(log, e, "érreur de bouclage pour le tab commandes")
-                break
+        _advance_to_page_with_date(page, datesup)
+        url_cmd = _collect_page_in_range(page, dateinf, datesup)
+        _paginate_and_collect(page, dateinf, datesup, url_cmd)
 
         log.info(f"{len(url_cmd)} commande(s) à traiter")
-
-        for cmd in url_cmd:
-            try:
-                page.goto(BASE_URL + cmd['link'])
-                page.wait_for_load_state("domcontentloaded")
-                commande = get_info(page, cmd)
-                log.debug(f"Commande extraite : {commande}")
-                persist_order(commande)
-            except Exception as e:
-                log_exception(log, e, f"érreur page {cmd['link']}")
+        _process_all_cmds(page, url_cmd)
 
         if url_cmd:
             log.debug(f"Dernière commande : {url_cmd[-1]}")

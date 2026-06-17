@@ -173,84 +173,117 @@ def get_date_reliquat(page, statut):
         return None
 
 
-# ─── Extraction d'une commande ────────────────────────────────────────────────
+# ─── Helpers d'extraction (get_info) ─────────────────────────────────────────
 
-def get_info(page, cmd):
+def _extract_refs(cmd):
+    """Return (ref_p1, ref_cmd) from a command dict, or empty strings on error."""
     try:
-        ref_p1  = cmd['link'].split("/")[-1]
-        ref_cmd = cmd['ref']
+        return cmd["link"].split("/")[-1], cmd["ref"]
     except Exception as e:
         log_exception(log, e, "Référencé Erreur")
-        ref_p1  = ""
-        ref_cmd = ""
-    log.debug(f"ref_cmd : {ref_cmd}")
+        return "", ""
+
+
+def _extract_date(page, ref_cmd):
+    """Return the order date string, trying two selectors with a regex fallback."""
     try:
         try:
-            header   = page.locator(ORDER_HEADER_LINES)
-            date_raw = header.nth(1).inner_text(timeout=3000).replace("Commandée le", "").strip()
+            date_raw = (
+                page.locator(ORDER_HEADER_LINES)
+                .nth(1)
+                .inner_text(timeout=3000)
+                .replace("Commandée le", "")
+                .strip()
+            )
         except PlaywrightTimeoutError:
             date_raw = page.locator(ORDER_DATE_TEXT).first.inner_text().strip()
         m = re.search(r"\d{2}/\d{2}/\d{4}", date_raw)
-        date_cmd = m.group(0) if m else nettoyer_texte(date_raw)
+        return m.group(0) if m else nettoyer_texte(date_raw)
     except Exception as e:
         log_exception(log, e, "Erreur de date" + ref_cmd)
-    log.debug(f"date_cmd : {date_cmd}")
+        return ""
 
+
+def _parse_qty(raw_qty):
+    """Parse a raw quantity string like '3' or '3/5' into an integer."""
+    if "/" in raw_qty:
+        raw_qty = raw_qty.split("/")[0]
+    try:
+        return int(raw_qty)
+    except ValueError:
+        return 0
+
+
+def _extract_li_data(li):
+    """Extract (ref_produit, title, qty, prix) from a single <li> product element."""
+    ref_text = li.locator(PRODUCT_REFERENCE).first.inner_text()
+    raw_qty  = li.locator(PRODUCT_QUANTITY).first.inner_text().strip()
+    try:
+        title = nettoyer_texte(li.locator(PRODUCT_LINK).first.inner_text(timeout=1000))
+    except PlaywrightTimeoutError:
+        title = ""
+    ref_match   = re.search(r"Réf\s*:\s*(\d+)", ref_text)
+    ref_produit = ref_match.group(1) if ref_match else None
+    prix_produit = nettoyer_texte(
+        li.locator(
+            "div.order-details__parcel-net div.order-details__parcel-net-number"
+        ).inner_text().replace("€", "")
+    )
+    return ref_produit, title, _parse_qty(raw_qty), prix_produit
+
+
+def _update_product_entry(prdt_data, ref_produit, title, qty, prix):
+    """Accumulate qty and prix into prdt_data for a given ref_produit."""
+    if not ref_produit:
+        return
+    prdt_data[ref_produit]["qty"]  += qty
+    prdt_data[ref_produit]["prix"]  = prix
+    if title:
+        prdt_data[ref_produit]["title"] = title
+
+
+def _build_product_data(page, ref_cmd):
+    """Return (prdt_data dict, final_list) by parsing all <li> product items."""
     prdt_data  = defaultdict(lambda: {"qty": 0, "prix": None, "title": ""})
     final_list = []
     try:
-        lis = page.locator("ul.order-details__parcel-list li.order-details__parcel-item").all()
+        lis = page.locator(
+            "ul.order-details__parcel-list li.order-details__parcel-item"
+        ).all()
         for li in lis:
-            ref_text  = li.locator(PRODUCT_REFERENCE).first.inner_text()
-            prdt_qty  = li.locator(PRODUCT_QUANTITY).first.inner_text().strip()
-
-            # Extraction du titre du produit commandé
-            try:
-                title = nettoyer_texte(li.locator(PRODUCT_LINK).first.inner_text(timeout=1000))
-            except PlaywrightTimeoutError:
-                title = ""
-
-            # Extraction de la référence
-            ref_match   = re.search(r"Réf\s*:\s*(\d+)", ref_text)
-            ref_produit = ref_match.group(1) if ref_match else None
-
-            # Nettoyage du prix
-            prix_produit = nettoyer_texte(
-                li.locator("div.order-details__parcel-net div.order-details__parcel-net-number").inner_text().replace("€", "")
-            )
-
-            # Si la quantité est du type "x/y", on prend juste x
-            if "/" in prdt_qty:
-                prdt_qty = prdt_qty.split("/")[0]
-
-            # Convertir en entier
-            try:
-                prdt_qty = int(prdt_qty)
-            except ValueError:
-                prdt_qty = 0
-
-            # Regrouper par ref
-            if ref_produit:
-                prdt_data[ref_produit]["qty"]  += prdt_qty
-                prdt_data[ref_produit]["prix"]  = prix_produit
-                if title:
-                    prdt_data[ref_produit]["title"] = title
-
-        # Reformater : "ref:title:qty"
+            _update_product_entry(prdt_data, *_extract_li_data(li))
         final_list = [
             f"{ref}:{data['title']}:{data['qty']}"
             for ref, data in prdt_data.items()
         ]
         log.debug(f"final_list : {final_list}")
-
     except Exception as e:
         log_exception(log, e, "Erreur de Produits " + ref_cmd)
-    log.debug(f"prdt_data : {prdt_data}")
+    return prdt_data, final_list
+
+
+def _extract_status(page, ref_cmd):
+    """Return the order status string, or None on error."""
     try:
-        statut = nettoyer_texte(page.locator(ORDER_STATUS).inner_text())
+        return nettoyer_texte(page.locator(ORDER_STATUS).inner_text())
     except Exception as e:
         log_exception(log, e, "Erreur de Statuts " + ref_cmd)
-        statut = None
+        return None
+
+
+# ─── Extraction d'une commande ────────────────────────────────────────────────
+
+def get_info(page, cmd):
+    ref_p1, ref_cmd = _extract_refs(cmd)
+    log.debug(f"ref_cmd : {ref_cmd}")
+
+    date_cmd = _extract_date(page, ref_cmd)
+    log.debug(f"date_cmd : {date_cmd}")
+
+    prdt_data, final_list = _build_product_data(page, ref_cmd)
+    log.debug(f"prdt_data : {prdt_data}")
+
+    statut = _extract_status(page, ref_cmd)
     log.debug(f"statut : {statut}")
 
     return {
