@@ -16,7 +16,7 @@ Architecture :
 import sys
 from pathlib import Path
 
-from scrapers.Legallais_P1.orders.scrap_legallais_orders import DATE_FORMAT
+DATE_FORMAT = "%d/%m/%Y"
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:

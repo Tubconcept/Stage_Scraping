@@ -90,7 +90,7 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
     from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_session_state
     from db.mariadb_db import init_site_db, insert_order as _db_insert_order
     from scrapers.Legallais_P1.orders.scraper_legallais_orders import (
-        BASE_URL, NEXT_PAGE_BUTTON, log_exception, get_url_cmd, check_date, get_Info,
+        BASE_URL, NEXT_PAGE_BUTTON, log_exception, get_url_cmd, check_date, get_info,
     )
 
     load_dotenv(PROJECT_ROOT / ".env")
@@ -161,7 +161,7 @@ def _run_legallais_orders_sync(date_from: datetime, date_to: datetime,
             try:
                 page.goto(BASE_URL + cmd["link"])
                 page.wait_for_load_state("domcontentloaded")
-                data = get_Info(page, cmd)
+                data = get_info(page, cmd)
                 row = {
                     "id_cmd":     data.get("ref_p1", ""),
                     "ref_cmd":    data.get("ref_cmd", ""),

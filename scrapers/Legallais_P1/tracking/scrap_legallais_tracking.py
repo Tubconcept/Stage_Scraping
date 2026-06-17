@@ -19,8 +19,6 @@ Aucune logique CSS ne doit rester dans ce fichier.
 import sys
 from pathlib import Path
 
-from scrapers.Prolians_P3.orders.scraper_prolians_orders import get_info
-
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -36,12 +34,12 @@ from db.mariadb_db import init_site_db, insert_tracking as _db_insert_tracking
 try:
     from .scraper_legallais_tracking import (
         BASE_URL, NEXT_PAGE_BUTTON,
-        log, log_exception, connexion, check_date, get_url_cmd, get_Info,
+        log, log_exception, connexion, check_date, get_url_cmd, get_info,
     )
 except ImportError:
     from scrapers.Legallais_P1.tracking.scraper_legallais_tracking import (  # type: ignore[no-redef]
         BASE_URL, NEXT_PAGE_BUTTON,
-        log, log_exception, connexion, check_date, get_url_cmd, get_Info,
+        log, log_exception, connexion, check_date, get_url_cmd, get_info,
     )
 
 load_dotenv()

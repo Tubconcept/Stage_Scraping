@@ -12,7 +12,7 @@ Architecture :
     - scrap_legallais_orders.py (ce fichier) = orchestrateur : session
       (cookie_manager_legallais), boucles de pagination, persist_order().
     - scraper_legallais_orders.py = moteur CSS : sélecteurs, get_url_cmd(),
-      get_Info(), helpers dates et nettoyage texte.
+      get_info(), helpers dates et nettoyage texte.
 
 Aucune logique CSS ne doit rester dans ce fichier.
 """
@@ -37,12 +37,12 @@ load_dotenv(_PROJECT_ROOT / ".env")
 try:
     from .scraper_legallais_orders import (
         BASE_URL, NEXT_PAGE_BUTTON,
-        log, log_exception, get_url_cmd, check_date, get_Info,
+        log, log_exception, get_url_cmd, check_date, get_info,
     )
 except ImportError:
     from scrapers.Legallais_P1.orders.scraper_legallais_orders import (  # type: ignore[no-redef]
         BASE_URL, NEXT_PAGE_BUTTON,
-        log, log_exception, get_url_cmd, check_date, get_Info,
+        log, log_exception, get_url_cmd, check_date, get_info,
     )
 
 from auth.legallais.cookie_manager_legallais import ensure_logged_in, get_session_state
@@ -175,7 +175,7 @@ def main():
             try:
                 page.goto(BASE_URL + cmd['link'])
                 page.wait_for_load_state("domcontentloaded")
-                commande = get_Info(page, cmd)
+                commande = get_info(page, cmd)
                 log.debug(f"Commande extraite : {commande}")
                 persist_order(commande)
             except Exception as e:

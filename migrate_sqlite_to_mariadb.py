@@ -130,7 +130,7 @@ def _batch_insert(
             inserted += cur.rowcount
         except MySQLError as e:
             mconn.rollback()
-            _log.error("Batch %d→%d échec sur %s : %s", i, i + len(batch), table, e)
+            _log.exception("Batch %d→%d échec sur %s", i, i + len(batch), table)
             raise
         finally:
             cur.close()
@@ -172,6 +172,68 @@ def migrate_site(site: str, mconn: mysql.connector.MySQLConnection, dry_run: boo
 
     return report
 
+# ─── Process site ───────────────────────────────────────────────────────────
+
+def _process_site(
+    site: str,
+    mconn: mysql.connector.MySQLConnection,
+    dry_run: bool,
+) -> tuple[int, int]:
+    """Traite un site et retourne (total_rows, total_inserted)."""
+    db_path = SQLITE_DBS[site]
+
+    if not db_path.exists():
+        _log.warning("[%s] Fichier %s absent — ignoré", site.upper(), db_path)
+        return 0, 0
+
+    _log.info("══ %s (%s) ══", site.upper(), SITE_PREFIX[site])
+    report = migrate_site(site, mconn, dry_run)
+
+    total_rows = 0
+    total_inserted = 0
+
+    for kind, stats in report.items():
+        total_rows += stats["total"]
+        total_inserted += stats["inserted"]
+
+        if stats["total"] <= 0:
+            continue
+
+        status = (
+            "DRY-RUN"
+            if dry_run
+            else f'{stats["inserted"]} insérées, {stats["ignored"]} ignorées'
+        )
+
+        _log.info(
+            "    %-12s %4d lignes  →  %s",
+            kind,
+            stats["total"],
+            status,
+        )
+
+    return total_rows, total_inserted
+
+
+def _log_summary(
+    total_rows: int,
+    total_inserted: int,
+    elapsed: float,
+    dry_run: bool,
+) -> None:
+    """Affiche le résumé final de la migration."""
+    _log.info("══════════════════════════════════════")
+    _log.info("Total lu      : %d lignes", total_rows)
+
+    if not dry_run:
+        _log.info("Total inséré  : %d lignes", total_inserted)
+
+    _log.info("Durée         : %.1fs", elapsed)
+    _log.info("══════════════════════════════════════")
+
+    if dry_run:
+        _log.info("Relance sans --dry-run pour migrer réellement.")
+
 
 # ─── Point d'entrée ───────────────────────────────────────────────────────────
 
@@ -189,8 +251,8 @@ def main() -> None:
     try:
         mconn = _mariadb_conn()
         _log.info("OK")
-    except MySQLError as e:
-        _log.error("Connexion impossible : %s", e)
+    except MySQLError:
+        _log.exception("Connexion impossible")
         sys.exit(1)
 
     total_rows     = 0
@@ -198,35 +260,25 @@ def main() -> None:
     start          = time.time()
 
     print()
+
     for site in ("legallais", "prolians", "setin"):
-        db_path = SQLITE_DBS[site]
-        if not db_path.exists():
-            _log.warning("[%s] Fichier %s absent — ignoré", site.upper(), db_path)
-            continue
-
-        _log.info("══ %s (%s) ══", site.upper(), SITE_PREFIX[site])
-        report = migrate_site(site, mconn, args.dry_run)
-
-        for kind, stats in report.items():
-            total_rows     += stats["total"]
-            total_inserted += stats["inserted"]
-            if stats["total"] > 0:
-                status = "DRY-RUN" if args.dry_run else f"{stats['inserted']} insérées, {stats['ignored']} ignorées"
-                _log.info("    %-12s %4d lignes  →  %s", kind, stats["total"], status)
-
-    mconn.close()
+        rows, inserted = _process_site(
+            site,
+            mconn,
+            args.dry_run,
+        )
+        total_rows += rows
+        total_inserted += inserted
 
     elapsed = time.time() - start
     print()
-    _log.info("══════════════════════════════════════")
-    _log.info("Total lu      : %d lignes", total_rows)
-    if not args.dry_run:
-        _log.info("Total inséré  : %d lignes", total_inserted)
-    _log.info("Durée         : %.1fs", elapsed)
-    _log.info("══════════════════════════════════════")
 
-    if args.dry_run:
-        _log.info("Relance sans --dry-run pour migrer réellement.")
+    _log_summary(
+        total_rows,
+        total_inserted,
+        elapsed,
+        args.dry_run,
+    )
 
 
 if __name__ == "__main__":
