@@ -13,6 +13,7 @@ Architecture :
 """
 
 import sys
+import time
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -147,8 +148,11 @@ def connexion(driver: Driver, email: str, password: str) -> None:
     # Tenter de restaurer la session du jour
     if load_cookies_for_driver(driver):
         driver.get(BASE_URL)
-        _wait_for(driver, BREADCRUMB, timeout=5)
-        if not driver.is_element_present(EMAIL_INPUT):
+        _wait_for(driver, ".o-menu__items__list", timeout=5)
+        # Vérification positive : le lien "Mon compte" n'existe que si connecté
+        if (driver.is_element_present("a[aria-label='Mon compte']")
+                or driver.is_element_present("a[href*='/user/my-account']")
+                or driver.is_element_present("a[href*='/user/account']")):
             log.info("Session restaurée — connexion ignorée.")
             return
         log.info("Session expirée — nouvelle connexion en cours...")
@@ -156,11 +160,24 @@ def connexion(driver: Driver, email: str, password: str) -> None:
     # Login complet
     log.info("Connexion en cours...")
     driver.get(LOGIN_URL)
-    _wait_for(driver, EMAIL_INPUT)
+    _wait_for(driver, EMAIL_INPUT, timeout=10)
+    time.sleep(1)
     driver.type(EMAIL_INPUT, email)
+    time.sleep(1)
     driver.type(PASSWORD_INPUT, password)
+    time.sleep(2)
+    # Gestion reCAPTCHA — l'iframe est cross-origin, on attend la validation
+    try:
+        if driver.is_element_present('iframe[title*="reCAPTCHA"]'):
+            log.info("reCAPTCHA détecté — attente de validation automatique...")
+            time.sleep(5)
+            if driver.is_element_present('iframe[title*="reCAPTCHA"]'):
+                log.info("Veuillez cocher 'Je ne suis pas un robot' dans le navigateur.")
+                time.sleep(25)
+    except Exception:
+        pass
     _click_if_present(driver, LOGIN_BUTTON)
-    _wait_for(driver, BREADCRUMB, timeout=10)
+    _wait_for(driver, BREADCRUMB, timeout=20)
 
     # Sauvegarder la nouvelle session
     save_cookies_from_driver(driver)

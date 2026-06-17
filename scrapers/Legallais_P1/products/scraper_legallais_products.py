@@ -15,6 +15,7 @@ Architecture :
 """
 
 import sys
+import time
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -69,8 +70,11 @@ class LegallaisScraper:
         if load_cookies_for_driver(d):
             d.get(BASE_URL)
             try:
-                d.wait_for_element("a[aria-label='Mon compte'], .o-menu__items__list", 5)
-                if not d.is_element_present(SELECTORS["email"]):
+                d.wait_for_element(".o-menu__items__list", 5)
+                # Vérification positive : le lien "Mon compte" n'existe que si connecté
+                if (d.is_element_present("a[aria-label='Mon compte']")
+                        or d.is_element_present("a[href*='/user/my-account']")
+                        or d.is_element_present("a[href*='/user/account']")):
                     print("[Legallais] Session restaurée — connexion ignorée.")
                     return
             except Exception:
@@ -80,12 +84,25 @@ class LegallaisScraper:
         # Login complet
         print("[Legallais] Connexion en cours...")
         d.get(LOGIN_URL)
-        d.wait_for_element(SELECTORS["email"], 5)
+        d.wait_for_element(SELECTORS["email"], 10)
+        time.sleep(1)
         d.type(SELECTORS["email"], self._email)
+        time.sleep(1)
         d.type(SELECTORS["password"], self._password)
+        time.sleep(2)
+        # Gestion reCAPTCHA — l'iframe est cross-origin, on attend la validation
+        try:
+            if d.is_element_present('iframe[title*="reCAPTCHA"]'):
+                print("[Legallais] reCAPTCHA détecté — attente de validation automatique...")
+                time.sleep(5)
+                if d.is_element_present('iframe[title*="reCAPTCHA"]'):
+                    print("[Legallais] Veuillez cocher 'Je ne suis pas un robot' dans le navigateur.")
+                    time.sleep(25)
+        except Exception:
+            pass
         d.click(SELECTORS["submit"])
         try:
-            d.wait_for_element("a[aria-label='Mon compte'], .o-menu__items__list, nav", 10)
+            d.wait_for_element("a[aria-label='Mon compte'], .o-menu__items__list, nav", 20)
         except Exception:
             pass
 
