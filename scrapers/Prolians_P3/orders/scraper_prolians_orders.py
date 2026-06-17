@@ -49,7 +49,7 @@ def navigate_to_orders(page):
     try:
         page.wait_for_selector(Selectors.order_row, timeout=20000)
         log.debug("Page commandes chargée")
-    except:
+    except Exception:
         log.warning("Sélecteur order_row introuvable sur cette page")
 
 
@@ -124,7 +124,7 @@ def collect_orders(page, date_inf, date_sup):
                 new_first = page.locator(Selectors.order_webref).first.inner_text(timeout=1000).strip()
                 if new_first != first_webref:
                     break
-            except:
+            except Exception:
                 pass
             page.wait_for_timeout(500)
 
@@ -151,7 +151,7 @@ def get_info(page, order):
     try:
         ref_cmd = page.locator(f"xpath={Selectors.client_order_ref_xpath}").inner_text(timeout=5000).strip()
         ref_cmd = clean_text(ref_cmd)
-    except:
+    except Exception:
         ref_cmd = ""
 
     # Produits (plusieurs lignes possibles)

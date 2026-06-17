@@ -270,6 +270,10 @@ def _scrape_batch(driver: Driver, data: dict) -> None:
     for item in products:
         try:
             driver.get(item["url"])
+            try:
+                driver.wait_for_element("div.c-price.c-price--final", 5)
+            except Exception:
+                pass
 
             cat1, cat2, cat3 = item["cat1"], item["cat2"], item["cat3"]
 
