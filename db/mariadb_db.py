@@ -357,6 +357,8 @@ def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ", ".join(f"`{h}`" for h in headers)
 
+    has_date_cmd = "date_cmd" in headers
+
     # COALESCE : essaie DD/MM/YYYY, YYYY-MM-DD, puis DD-MM-YYYY
     # (l'ancien format P1 utilisait des tirets au lieu de slashes)
     parsed_date = (
@@ -370,18 +372,20 @@ def export_table_to_csv(_conn, table: str, headers: list[str], out_path: Path,
     conn_db = _get_conn()
     try:
         with conn_db.cursor() as cur:
-            if since is not None:
+            if since is not None and has_date_cmd:
                 cur.execute(
                     f"SELECT {cols} FROM `{table}`"
                     f" WHERE {parsed_date} >= %s"
                     f" ORDER BY {parsed_date} DESC",
                     (since,),
                 )
-            else:
+            elif has_date_cmd:
                 cur.execute(
                     f"SELECT {cols} FROM `{table}`"
                     f" ORDER BY {parsed_date} DESC"
                 )
+            else:
+                cur.execute(f"SELECT {cols} FROM `{table}`")
             rows = cur.fetchall()
     except pymysql.Error as e:
         _log.exception("export_table_to_csv(%s) échec : %s", table, e)

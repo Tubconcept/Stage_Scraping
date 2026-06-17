@@ -82,7 +82,7 @@ def _read_refs_and_price(page):
             try:
                 text = items.nth(i).inner_text(timeout=3000).strip()
                 full_text += " " + text
-            except:
+            except Exception:
                 continue
 
         # Parse les références
@@ -98,12 +98,12 @@ def _read_refs_and_price(page):
         m = re.search(r"EAN\s*[: ]\s*(\d{8,14})", full_text, re.IGNORECASE)
         if m:
             ean = m.group(1)
-    except:
+    except Exception:
         pass
     try:
         try:
             page.wait_for_selector(Selectors.price, timeout=3000)
-        except:
+        except Exception:
             pass
 
         # Message « prix sur demande » ou indisponible → pas de prix affiché
@@ -118,7 +118,7 @@ def _read_refs_and_price(page):
                     stock = "disponible"
             if not stock:
                 stock = "non disponible"
-    except:
+    except Exception:
         pass
     try:
         eco_elem = page.locator(Selectors.eco_tax)
@@ -127,7 +127,7 @@ def _read_refs_and_price(page):
             m = re.search(r"([\d,]+)\s*€", raw_eco)
             if m:
                 eco_tax = m.group(1).replace(",", ".")
-    except:
+    except Exception:
         pass
     try:
         red_elem = page.locator(Selectors.reduction)
@@ -136,7 +136,7 @@ def _read_refs_and_price(page):
             m = re.search(r"[-−]?\s*([\d,]+)\s*%", raw_red)
             if m:
                 reduction = m.group(1).replace(",", ".")
-    except:
+    except Exception:
         pass
     return code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction
 
@@ -153,7 +153,7 @@ def _extract_declinaisons(page, radios):
     try:
         rg = page.locator('[role="radiogroup"]').first
         dim_name = (rg.get_attribute("aria-label") or "").strip()
-    except:
+    except Exception:
         pass
 
     for i in range(radios.count()):
@@ -166,17 +166,17 @@ def _extract_declinaisons(page, radios):
                 lbl = page.locator(f"label[for='{rid}']")
                 if lbl.count() > 0:
                     variant_val = lbl.inner_text(timeout=3000).strip()
-        except:
+        except Exception:
             pass
         if not variant_val:
             try:
                 variant_val = (radio.get_attribute("aria-label") or "").strip()
-            except:
+            except Exception:
                 pass
         if not variant_val:
             try:
                 variant_val = (radio.get_attribute("value") or "").strip()
-            except:
+            except Exception:
                 pass
 
         # Format : "Longueur totale : 50mm" (séparateur " : ")
@@ -237,7 +237,7 @@ def extract_product_from_dom(page):
     # ---------------- REF
     try:
         page.wait_for_selector(Selectors.inline_list_item, timeout=5000)
-    except:
+    except Exception:
         log.warning("Sélecteur refs introuvable — produit ignoré")
         return None
 
@@ -254,13 +254,13 @@ def extract_product_from_dom(page):
         # Ignore accueil + 1er niveau ; garde jusqu'à 3 catégories feuilles
         cats = [crumbs.nth(i).inner_text() for i in range(2, min(count, 5))]
         data["product_category_tree"] = "||".join(cats)
-    except:
+    except Exception:
         pass
 
     # ---------------- TITLE
     try:
         data["product_designation"] = page.locator(Selectors.title).first.inner_text()
-    except:
+    except Exception:
         pass
 
     # ---------------- CONDITIONNEMENT
@@ -270,7 +270,7 @@ def extract_product_from_dom(page):
         m = re.search(r"(\d+)", cond_text)
         if m:
             data["product_conditionnement"] = m.group(1)
-    except:
+    except Exception:
         pass
 
     # ---------------- ATTRIBUTES
@@ -282,17 +282,17 @@ def extract_product_from_dom(page):
             if tds.count() >= 2:
                 attrs.append(f"{tds.nth(0).inner_text()}={tds.nth(1).inner_text()}")
         data["product_attributes"] = "||".join(attrs)
-    except:
+    except Exception:
         pass
 
     # ---------------- BRAND
     try:
         data["product_brand"] = page.locator(Selectors.brand_name).inner_text()
-    except:
+    except Exception:
         pass
     try:
         data["product_brand_logo_url"] = page.locator(Selectors.brand_image).first.get_attribute("src")
-    except:
+    except Exception:
         pass
 
     # ---------------- DESCRIPTION
@@ -301,11 +301,11 @@ def extract_product_from_dom(page):
         if btn.count() > 0:
             btn.first.click()
             page.wait_for_timeout(300)
-    except:
+    except Exception:
         pass
     try:
         data["product_description"] = page.locator(Selectors.description_content).inner_html()
-    except:
+    except Exception:
         pass
 
     # ---------------- DOCUMENTS
@@ -313,7 +313,7 @@ def extract_product_from_dom(page):
         docs = page.locator(Selectors.documents)
         doc_urls = [docs.nth(i).get_attribute("href") for i in range(docs.count())]
         data["product_docs_url"] = "||".join(u for u in doc_urls if u)
-    except:
+    except Exception:
         pass
 
     # ---------------- IMAGES
@@ -338,7 +338,7 @@ def extract_product_from_dom(page):
                 if src and src not in srcs:
                     srcs.append(src)
             data["product_image_url"] = "||".join(srcs)
-    except:
+    except Exception:
         pass
 
     # ---------------- CROSS-SELL (produits similaires)
@@ -355,7 +355,7 @@ def extract_product_from_dom(page):
                     refs.append(ref)
         if refs:
             data["product_cross_sell"] = "||".join(refs)
-    except:
+    except Exception:
         pass
 
     # ---------------- ECO-LABELS
@@ -370,7 +370,7 @@ def extract_product_from_dom(page):
                 labels.add(label.strip())
         if labels:
             data["product_eco_label"] = "||".join(sorted(labels))
-    except:
+    except Exception:
         pass
 
     # ---------------- COMBINATIONS / DÉCLINAISONS
@@ -420,7 +420,7 @@ def extract_product_from_dom(page):
             data["product_stock_status"]        = stock_init
             data["product_fournisseur_url"]     = page.url
             rows.append(data)
-    except:
+    except Exception:
         data["product_fournisseur_url"] = page.url
         rows.append(data)
 
