@@ -105,7 +105,13 @@ def main():
 
         # -------- SITEMAPS : index → sous-index produits → URLs articles
         sitemap_files = extract_sitemap_urls(session, SITEMAP_INDEX)
-        product_sitemap = next(u for u in sitemap_files if "product" in u)
+        product_sitemap = next((u for u in sitemap_files if "product" in u), None)
+        if not product_sitemap:
+            log.error("Sitemap produits introuvable dans %s — %d entrées trouvées.", SITEMAP_INDEX, len(sitemap_files))
+            browser.close()
+            if db_conn:
+                db_conn.close()
+            sys.exit(1)
         all_product_files = extract_sitemap_urls(session, product_sitemap)
 
         # Découpage équitable des fichiers sitemap entre les workers (--part / --total)
@@ -257,12 +263,25 @@ class ProlianProductScraper:
             for c in context.cookies():
                 session.cookies.set(c["name"], c["value"], domain=c.get("domain", ".prolians.fr"))
 
-            sitemap_files   = extract_sitemap_urls(session, SITEMAP_INDEX)
-            product_sitemap = next(u for u in sitemap_files if "product" in u)
-            all_files       = extract_sitemap_urls(session, product_sitemap)
-            product_urls: list = []
-            for f in all_files:
-                product_urls.extend(extract_sitemap_urls(session, f))
+            try:
+                sitemap_files   = extract_sitemap_urls(session, SITEMAP_INDEX)
+                product_sitemap = next((u for u in sitemap_files if "product" in u), None)
+                if not product_sitemap:
+                    log.error("Sitemap produits introuvable dans %s — %d entrées trouvées.", SITEMAP_INDEX, len(sitemap_files))
+                    browser.close()
+                    if db_conn:
+                        db_conn.close()
+                    return
+                all_files = extract_sitemap_urls(session, product_sitemap)
+                product_urls: list = []
+                for f in all_files:
+                    product_urls.extend(extract_sitemap_urls(session, f))
+            except Exception as _sm_exc:
+                log.error("Erreur lors de la lecture du sitemap : %s", _sm_exc)
+                browser.close()
+                if db_conn:
+                    db_conn.close()
+                return
 
             # Reprise : ignorer les URLs déjà en base
             scraped_urls = get_scraped_product_urls(db_conn, "prolians") if db_conn else set()
