@@ -11,6 +11,7 @@ Modes d'exécution par site :
   - Setin     : scrapers async Playwright (BaseScraper) via _start_async
   - Prolians  : produits/suivi async ; commandes/suppression en sync Playwright
   - Legallais : produits Botasaurus sync ; commandes/suivi/suppression Playwright sync
+  - Sider     : produits async Playwright uniquement (commandes/suivi non implémentés)
 
 Wrappers _run_*_sync : contournent les input() des scripts CLI pour être appelables depuis la GUI.
 """
@@ -373,7 +374,6 @@ class ScraperApp(tk.Tk):
 
         if key == "produits":
             row = tk.Frame(frm.input_area, bg=BG)
-            row.pack()
             tk.Label(row, text="Catégorie :", font=("Helvetica", 10),
                      bg=BG, fg=BLACK).pack(side="left")
             frm.cat_var   = tk.StringVar()
@@ -603,6 +603,8 @@ class ScraperApp(tk.Tk):
                 self._launch_legallais(key)
             elif self._site == "Sonepar":
                 self._launch_sonepar(key)
+            elif self._site == "Sider":
+                self._launch_sider(key)
             else:
                 self._launch_prolians(key)
         except ValueError as exc:
@@ -650,7 +652,7 @@ class ScraperApp(tk.Tk):
             messagebox.showerror("Erreur", "Veuillez d'abord choisir un site.")
             return
 
-        _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians"}
+        _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians", "Sider": "sider"}
         site_key = _SITE_KEYS.get(self._site, self._site.lower())
 
         _ACTION_INFO = {
@@ -738,6 +740,7 @@ class ScraperApp(tk.Tk):
         "Prolians":  "prolians",
         "Sonepar":   "sonepar",
     }
+    _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians", "Sider": "sider"}
 
     _REFS_MODULES = {
         "setin":     "scrapers.Setin_P5.products.scrap_setin_by_refs",
@@ -939,6 +942,23 @@ class ScraperApp(tk.Tk):
             mod = import_module(cfg["imports"]["suppr"])
             scraper = mod.create_scraper()
             self._start_sync(key, scraper.run, lambda: "", scraper=scraper)
+
+    # ─── Lanceurs Sider ──────────────────────────────────────────────────────
+
+    def _launch_sider(self, key: str):
+        cfg   = SITES_CONFIG["Sider"]
+        panel = self._panels[key]
+
+        if key == "produits":
+            cat     = panel.cat_var.get()
+            mod     = import_module(cfg["imports"]["produits"])
+            scraper = mod.create_scraper(category_name=cat)
+            self._start_async(key, scraper.run(), scraper, lambda: "")
+        else:
+            messagebox.showinfo(
+                "Non disponible",
+                f"L'action « {key} » n'est pas encore implémentée pour Sider (P6).",
+            )
 
     # ─── Lanceurs Legallais ───────────────────────────────────────────────────
 

@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
 from css_selectors.setin import Selectors as _SetinSelectors
 from css_selectors.legallais import CATEGORY_NAMES as _LegallaisCategories
 from css_selectors.sonepar import Selectors as _SoneparSelectors
+from css_selectors.sider import Selectors as _SiderSelectors
 
 SITES_CONFIG = {
     # ─── Setin (fournisseur P5) — www.setin.fr ───────────────────────────────
@@ -67,6 +68,12 @@ SITES_CONFIG = {
             "commandes": None,  # à implémenter
             "suivi":     None,  # à implémenter
             "suppr":     None,  # à implémenter
+    # ─── Sider (fournisseur P6) — www.sider.biz ─────────────────────────────
+    "Sider": {
+        "has_categories": True,
+        "categories": _SiderSelectors.CATEGORY_NAMES,
+        "imports": {
+            "produits": "scrapers.Sider_P6.products.scrap_sider_products",
         }
     },
 }
