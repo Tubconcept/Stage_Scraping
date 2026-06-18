@@ -68,6 +68,8 @@ SITES_CONFIG = {
             "commandes": None,  # à implémenter
             "suivi":     None,  # à implémenter
             "suppr":     None,  # à implémenter
+        }
+    },
     # ─── Sider (fournisseur P6) — www.sider.biz ─────────────────────────────
     "Sider": {
         "has_categories": True,
