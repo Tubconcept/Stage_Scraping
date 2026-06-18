@@ -4,7 +4,7 @@ Remplace sqlite_db dans les scrapers : changer l'import suffit.
 
 Tables cibles dans Scraper_base :
   {PREFIX}_products  /  {PREFIX}_orders  /  {PREFIX}_tracking
-  où PREFIX = P1 (legallais), P3 (prolians), P5 (setin)
+  où PREFIX = P1 (legallais), P3 (prolians), P5 (setin), P6 (sider)
 
 API publique
 ------------
@@ -40,6 +40,7 @@ SITE_PREFIX: dict[str, str] = {
     "legallais": "P1",
     "prolians":  "P3",
     "setin":     "P5",
+    "sider":     "P6",
 }
 
 # ─── Paramètres de connexion ──────────────────────────────────────────────────
