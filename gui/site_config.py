@@ -21,6 +21,7 @@ if str(_ROOT) not in sys.path:
 
 from css_selectors.setin import Selectors as _SetinSelectors
 from css_selectors.legallais import CATEGORY_NAMES as _LegallaisCategories
+from css_selectors.sonepar import Selectors as _SoneparSelectors
 
 SITES_CONFIG = {
     # ─── Setin (fournisseur P5) — www.setin.fr ───────────────────────────────
@@ -54,6 +55,18 @@ SITES_CONFIG = {
             "commandes": "scrapers.Legallais_P1.orders.scrap_legallais_orders",
             "suivi":     "scrapers.Legallais_P1.tracking.scrap_legallais_tracking",
             "suppr":     "scrapers.Legallais_P1.deleting.scrap_legallais_suppradrr",
+        }
+    },
+    # ─── Sonepar (fournisseur P8) — www.sonepar.fr ────────────────────────
+    "Sonepar": {
+        "has_categories": True,
+        "categories": _SoneparSelectors.CATEGORY_NAMES,
+        "imports": {
+            "produits":  "scrapers.Sonepar_P8.products.scrap_sonepar_products",
+            "refs":      "scrapers.Sonepar_P8.products.scrap_sonepar_by_refs",
+            "commandes": None,  # à implémenter
+            "suivi":     None,  # à implémenter
+            "suppr":     None,  # à implémenter
         }
     },
 }

@@ -149,16 +149,18 @@ class BaseScraper:
 
         try:
             import json
-            import aiofiles
 
             path = Path(path)
             path.parent.mkdir(parents=True, exist_ok=True)
 
             storage = await self._context.storage_state()
 
-            async with aiofiles.open(path, "w", encoding="utf-8") as f:
-                await f.write(json.dumps(storage, indent=2))
+            # Écriture synchrone dans un thread pour ne pas bloquer la boucle
+            def _write():
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(storage, f, indent=2)
 
+            await asyncio.to_thread(_write)
             self.log.debug(f"État stocké: {path}")
         except Exception as exc:
             self.log.error(f"Erreur sauvegarde session: {exc}")

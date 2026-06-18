@@ -491,6 +491,12 @@ class ScraperApp(tk.Tk):
 
     # ─── Navigation ───────────────────────────────────────────────────────────
 
+    # Actions disponibles par site (clés absentes → bouton masqué)
+    _SITE_AVAILABLE_ACTIONS: dict[str, set[str]] = {
+        "Sonepar": {"produits", "refs", "commandes", "suivi", "suppr"},
+    }
+    _ALL_ACTIONS: set[str] = {"produits", "commandes", "suivi", "suppr", "refs"}
+
     def _select_site(self, name: str):
         self._site = name
         self._lbl_site.config(text=f"Site sélectionné : {name}", fg=GREEN_TXT)
@@ -499,6 +505,15 @@ class ScraperApp(tk.Tk):
                      fg=WHITE     if n == name else BLACK)
         for b in self._action_btns.values():
             b.config(bg=YELLOW, fg=BLACK)
+
+        # Afficher uniquement les boutons disponibles pour ce site
+        available = self._SITE_AVAILABLE_ACTIONS.get(name, self._ALL_ACTIONS)
+        for key, btn in self._action_btns.items():
+            btn.pack_forget()
+        for key, btn in self._action_btns.items():
+            if key in available:
+                btn.pack(side="left", padx=5)
+
         self._action_frm.pack(fill="x")
         for p in self._panels.values():
             p.pack_forget()
@@ -586,6 +601,8 @@ class ScraperApp(tk.Tk):
                 self._launch_setin(key)
             elif self._site == "Legallais":
                 self._launch_legallais(key)
+            elif self._site == "Sonepar":
+                self._launch_sonepar(key)
             else:
                 self._launch_prolians(key)
         except ValueError as exc:
@@ -715,16 +732,70 @@ class ScraperApp(tk.Tk):
 
     # ─── Lancement mode références ────────────────────────────────────────────
 
-    _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians"}
+    _SITE_KEYS = {
+        "Setin":     "setin",
+        "Legallais": "legallais",
+        "Prolians":  "prolians",
+        "Sonepar":   "sonepar",
+    }
 
     _REFS_MODULES = {
         "setin":     "scrapers.Setin_P5.products.scrap_setin_by_refs",
         "legallais": "scrapers.Legallais_P1.products.scrap_legallais_by_refs",
         "prolians":  "scrapers.Prolians_P3.products.scrap_prolians_by_refs",
+        "sonepar":   "scrapers.Sonepar_P8.products.scrap_sonepar_by_refs",
     }
 
     # Sites dont le scraper par-refs est synchrone (Botasaurus)
     _SYNC_REFS_SITES = {"legallais"}
+
+    # ─── Lanceurs Sonepar ─────────────────────────────────────────────────────
+
+    def _launch_sonepar(self, key: str):
+        panel = self._panels[key]
+        cfg   = SITES_CONFIG["Sonepar"]
+
+        if key == "refs":
+            if not getattr(panel, "refs_file_path", None):
+                messagebox.showerror(_MSG_MISSING_FILE, _MSG_CHOOSE_FILE)
+                return
+            self._launch_by_refs(panel.refs_file_path)
+            return
+
+        if key == "produits":
+            cat     = panel.cat_var.get() if cfg.get("has_categories") else ""
+            mod     = import_module(cfg["imports"]["produits"])
+            scraper = mod.create_scraper(category_name=cat)
+            self._start_async(key, scraper.run(), scraper, lambda: "")
+
+        else:
+            module_path = cfg["imports"].get(key)
+            if not module_path:
+                _LABELS = {
+                    "commandes": "Commandes",
+                    "suivi":     "Suivi Commandes",
+                    "suppr":     "Suppression Adresses",
+                }
+                messagebox.showinfo(
+                    "En cours de développement",
+                    f"Le module « {_LABELS.get(key, key)} » pour Sonepar\n"
+                    "n'est pas encore implémenté.\n\n"
+                    "Il sera disponible prochainement.",
+                )
+                return
+            # Module disponible — lancer selon le type d'action
+            mod = import_module(module_path)
+            if key == "commandes":
+                df, dt  = self._read_dates(panel)
+                scraper = mod.create_scraper(date_from=df, date_to=dt)
+                self._start_async(key, scraper.run(), scraper, lambda: str(scraper._csv_path or ""))
+            elif key == "suivi":
+                now     = datetime.now()
+                scraper = mod.create_scraper(date_from=now - timedelta(days=7), date_to=now)
+                self._start_async(key, scraper.run(), scraper, lambda: str(scraper._csv_path or ""))
+            elif key == "suppr":
+                scraper = mod.create_scraper()
+                self._start_async(key, scraper.run(), scraper, lambda: "")
 
     def _launch_by_refs(self, file_path: Path) -> None:
         """Valide le fichier, copie dans data/imports/ et lance le scraper par refs."""

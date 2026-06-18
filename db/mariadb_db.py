@@ -40,6 +40,7 @@ SITE_PREFIX: dict[str, str] = {
     "legallais": "P1",
     "prolians":  "P3",
     "setin":     "P5",
+    "sonepar":   "P8",
 }
 
 # ─── Paramètres de connexion ──────────────────────────────────────────────────
@@ -92,19 +93,25 @@ class _ConnSentinel:
 _SENTINEL = _ConnSentinel()
 
 
+# Sites pour lesquels seule la table products est nécessaire
+_PRODUCTS_ONLY_SITES: frozenset[str] = frozenset({"sonepar"})
+
+
 # ─── Création des tables ──────────────────────────────────────────────────────
 
 def _ensure_tables(site: str) -> None:
-    """Crée les 3 tables et la séquence de déclinaisons du site si nécessaire."""
+    """Crée les tables nécessaires et la séquence de déclinaisons du site."""
     prefix = SITE_PREFIX[site]
+    all_kinds = [
+        ("products", CSV_HEADERS,          None),
+        ("orders",   ORDERS_CSV_HEADERS,   "id_cmd"),
+        ("tracking", TRACKING_CSV_HEADERS, "id_cmd"),
+    ]
+    kinds = [all_kinds[0]] if site in _PRODUCTS_ONLY_SITES else all_kinds
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            for kind, headers, unique_col in [
-                ("products", CSV_HEADERS, None),
-                ("orders",   ORDERS_CSV_HEADERS,   "id_cmd"),
-                ("tracking", TRACKING_CSV_HEADERS, "id_cmd"),
-            ]:
+            for kind, headers, unique_col in kinds:
                 table = f"{prefix}_{kind}"
                 col_defs = ",\n    ".join(f"`{h}` TEXT" for h in headers)
                 unique_clause = f",\n    UNIQUE KEY `uq_{table}` (`{unique_col}`(255))" if unique_col else ""

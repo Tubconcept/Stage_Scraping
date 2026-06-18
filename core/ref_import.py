@@ -26,16 +26,19 @@ IMPORT_JSON_DIR = DIRECTORY / "data" / "imports" / "json"
 # - legallais (P1) : 6 chiffres   ex: 196874
 # - prolians  (P3) : 8 chiffres   ex: 46741468
 # - setin     (P5) : 6 alphanumériques (maj insensible)  ex: EFF547
+# - sonepar   (P8) : 11 chiffres  ex: 05594001205
 _PATTERNS: dict[str, re.Pattern] = {
     "legallais": re.compile(r"^\d{6}$"),
     "prolians":  re.compile(r"^\d{8}$"),
     "setin":     re.compile(r"^[A-Za-z0-9]{6}$"),
+    "sonepar":   re.compile(r"^\d{11}$"),
 }
 
 _SITE_LABELS: dict[str, str] = {
     "legallais": "Legallais — 6 chiffres (ex : 196874)",
     "prolians":  "Prolians — 8 chiffres (ex : 46741468)",
     "setin":     "Setin — 6 caractères alphanumériques (ex : EFF547)",
+    "sonepar":   "Sonepar — 11 chiffres (ex : 05594001205)",
 }
 
 _HEADER_WORDS = frozenset({
