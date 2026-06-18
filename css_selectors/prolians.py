@@ -32,6 +32,44 @@ class Selectors:
     breadcrumb           = '[data-testid="breadcrumb/desktop"] a'
 
     # ══════════════════════════════════════════════════════════════════════════
+    # NAVIGATION PAR CATÉGORIE (marche des URLs /nos-produits)
+    # ══════════════════════════════════════════════════════════════════════════
+    # Le méga-menu « Produits » est un composant React sans <a href> et avec un
+    # overlay qui intercepte les clics → on n'essaie PAS de le piloter.
+    # À la place, on navigue directement les URLs de catégorie, toutes propres
+    # et hiérarchiques : /nos-produits/{slug}/{slug}/...  (cf. breadcrumb).
+    PRODUCTS_ROOT_URL = f"{BASE_URL}/nos-produits"
+
+    # Liens de (sous-)catégorie : tout <a> pointant sous /nos-produits/
+    category_link     = 'a[href^="/nos-produits/"]'
+    # Conteneur listing + cartes produit (le testid "product-card/product-link"
+    # de la recherche n'existe PAS ici ; on prend l'<a> à l'intérieur de la carte)
+    product_list      = '[data-testid="product-list"]'
+    product_card      = '[data-testid="product-card"]'
+    product_card_link = '[data-testid="product-card"] a[href]'
+    # Pagination par URL : ?p=2, ?p=3 … (param « p », pas « page »)
+    pagination_link   = 'a[href*="?p="], a[href*="&p="]'
+
+    # Catégories principales : nom affiché (GUI) → slug d'URL sous /nos-produits
+    CATEGORY_URLS = {
+        "EPI - Protection individuelle":                              "epi-protection-individuelle",
+        "Outillage":                                                  "outillage",
+        "Consommables":                                               "consommables",
+        "Quincaillerie":                                              "quincaillerie",
+        "Boulonnerie-visserie et Fixations":                          "boulonnerie-visserie-et-fixations",
+        "Soudage, machines et équipements d'atelier":                 "soudage-machines-et-equipements-d-atelier",
+        "Plomberie, Sanitaire, Chauffage, Climatisation et Pompage":  "plomberie-sanitaire-chauffage-climatisation-et-pompage",
+        "Équipements de chantier":                                    "equipements-de-chantier",
+        "Électricité":                                                "electricite",
+        "Aménagements extérieurs":                                    "amenagements-exterieurs",
+    }
+    # Entrée GUI pour scraper tout le catalogue (parcourt les 10 catégories).
+    # Placée EN FIN de liste pour que le défaut GUI (1er élément) soit une vraie
+    # catégorie — évite un crawl complet déclenché par mégarde.
+    ALL_CATEGORIES_LABEL = "Toutes les catégories"
+    CATEGORY_NAMES = list(CATEGORY_URLS.keys()) + [ALL_CATEGORIES_LABEL]
+
+    # ══════════════════════════════════════════════════════════════════════════
     # PAGE DÉTAIL PRODUIT — champs alignés sur CSV_HEADERS (core.config)
     # ══════════════════════════════════════════════════════════════════════════
     # inline_list_item : bloc Code P, EAN, réf. fabricant, réf. PROLIANS
