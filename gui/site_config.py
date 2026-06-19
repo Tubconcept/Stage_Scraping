@@ -23,6 +23,7 @@ from css_selectors.setin import Selectors as _SetinSelectors
 from css_selectors.legallais import CATEGORY_NAMES as _LegallaisCategories
 from css_selectors.sonepar import Selectors as _SoneparSelectors
 from css_selectors.sider import Selectors as _SiderSelectors
+from css_selectors.prolians import Selectors as _ProliansSelectors
 
 SITES_CONFIG = {
     # ─── Setin (fournisseur P5) — www.setin.fr ───────────────────────────────
@@ -37,14 +38,19 @@ SITES_CONFIG = {
         }
     },
     # ─── Prolians (fournisseur P3) — www.prolians.fr ───────────────────────
+    # Produits : navigation par catégorie (marche des URLs /nos-produits).
+    # Catégorie vide = catalogue complet. Le scraper sitemap historique reste
+    # disponible en CLI : scrapers.Prolians_P3.products.scrap_prolians_products
     "Prolians": {
-        "has_categories": False,  # scraping via sitemap, pas de filtre catégorie
-        "categories": [],
+        "has_categories": True,
+        "categories": _ProliansSelectors.CATEGORY_NAMES,
         "imports": {
-            "produits":  "scrapers.Prolians_P3.products.scrap_prolians_products",
-            "commandes": "scrapers.Prolians_P3.orders.scrap_prolians_orders",
-            "suivi":     "scrapers.Prolians_P3.tracking.scrap_prolians_tracking",
-            "suppr":     "scrapers.Prolians_P3.deleting.scrap_suppradrr",
+            "produits":        "scrapers.Prolians_P3.products.scrap_prolians_by_category",
+            "catalogue_light": "scrapers.Prolians_P3.products.scrap_prolians_light",
+            "maj_prixstock":   "scrapers.Prolians_P3.products.scrap_prolians_price_stock",
+            "commandes":       "scrapers.Prolians_P3.orders.scrap_prolians_orders",
+            "suivi":           "scrapers.Prolians_P3.tracking.scrap_prolians_tracking",
+            "suppr":           "scrapers.Prolians_P3.deleting.scrap_suppradrr",
         }
     },
     # ─── Legallais (fournisseur P1) — www.legallais.com ────────────────────

@@ -344,6 +344,71 @@ def get_scraped_product_urls(_conn, site: str) -> set[str]:
         conn_db.close()
 
 
+def get_product_references(_conn, site: str) -> list[str]:
+    """Retourne toutes les références fournisseur (non vides) déjà en base.
+
+    Utilisé par le mode « MAJ prix/stock GraphQL » pour savoir quels produits
+    rafraîchir.
+    """
+    table = _table(site, "products")
+    conn_db = _get_conn()
+    try:
+        with conn_db.cursor() as cur:
+            cur.execute(
+                f"SELECT DISTINCT `product_reference_fournisseur` FROM `{table}` "
+                f"WHERE `product_reference_fournisseur` <> ''"
+            )
+            return [r[0] for r in cur.fetchall() if r[0]]
+    except pymysql.Error as e:
+        _log.exception("get_product_references(%s) échec : %s", site, e)
+        return []
+    finally:
+        conn_db.close()
+
+
+def update_product_fields(_conn, site: str, ref: str, fields: dict) -> bool:
+    """UPDATE ciblé de quelques colonnes pour une référence donnée.
+
+    Ne touche QUE les colonnes de ``fields`` (les autres — description, images,
+    etc. — sont préservées). Retourne True si au moins une ligne a été modifiée.
+
+    Sécurité : seules les colonnes appartenant à ``CSV_HEADERS`` sont acceptées.
+    """
+    ref = str(ref or "").strip()
+    cols = [c for c in fields if c in CSV_HEADERS]
+    if not ref or not cols:
+        return False
+    table = _table(site, "products")
+    set_clause = ", ".join(f"`{c}`=%s" for c in cols)
+    values = [str(fields.get(c, "") or "") for c in cols]
+    conn_db = _get_conn()
+    try:
+        with conn_db.cursor() as cur:
+            cur.execute(
+                f"UPDATE `{table}` SET {set_clause} "
+                f"WHERE `product_reference_fournisseur` = %s",
+                values + [ref],
+            )
+            # rowcount = lignes MODIFIÉES ; 0 peut signifier « inexistant » OU
+            # « existant mais déjà à jour ». On lève l'ambiguïté par un SELECT.
+            matched = cur.rowcount > 0
+            if not matched:
+                cur.execute(
+                    f"SELECT 1 FROM `{table}` "
+                    f"WHERE `product_reference_fournisseur` = %s LIMIT 1",
+                    (ref,),
+                )
+                matched = cur.fetchone() is not None
+        conn_db.commit()
+        return matched
+    except pymysql.Error as e:
+        conn_db.rollback()
+        _log.exception("update_product_fields(%s) échec : %s | ref=%s", site, e, ref)
+        return False
+    finally:
+        conn_db.close()
+
+
 # ─── Séquences de groupes de déclinaisons ────────────────────────────────────
 
 def next_decli_index(site: str) -> int:
