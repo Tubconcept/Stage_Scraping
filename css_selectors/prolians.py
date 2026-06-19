@@ -49,6 +49,10 @@ class Selectors:
     product_card_link = '[data-testid="product-card"] a[href]'
     # Pagination par URL : ?p=2, ?p=3 … (param « p », pas « page »)
     pagination_link   = 'a[href*="?p="], a[href*="&p="]'
+    # Bouton « Page suivante » : composant React sans <a href> (data-react-aria),
+    # désactivé sur la dernière page. C'est lui qui pilote la pagination du
+    # listing — les liens numérotés ?p=N ne sont pas toujours présents.
+    pagination_next   = 'button[aria-label="Page suivante"]'
 
     # Catégories principales : nom affiché (GUI) → slug d'URL sous /nos-produits
     CATEGORY_URLS = {

@@ -64,6 +64,9 @@ PASSWORD = os.getenv("Password_P3")
 
 BASE_URL = Selectors.BASE_URL
 
+# Garde-fou anti-boucle : nb max de pages de listing parcourues par catégorie.
+_MAX_PAGES_PER_CATEGORY = 500
+
 
 # =============================
 # HELPERS NAVIGATION CATÉGORIE
@@ -148,32 +151,36 @@ def _collect_product_refs(page) -> list[str]:
     return refs
 
 
-def _detect_total_pages(page) -> int:
-    """Déduit le nombre total de pages d'une catégorie (pagination ?p=N).
+def _has_next_page(page, current_page: int) -> bool:
+    """Indique s'il existe une page de listing au-delà de ``current_page``.
 
-    Combine les liens de pagination (?p=2, ?p=3…) et le texte « X sur Y ».
+    Prolians pagine via un bouton React « Page suivante » (sans ``<a href>``),
+    désactivé sur la dernière page : on ne peut donc pas connaître le total a
+    priori. On teste ce bouton en priorité (présent + non désactivé), avec un
+    repli sur un éventuel lien ``?p=N`` strictement supérieur à la page courante.
     """
-    total = 1
+    # 1) Bouton « Page suivante » (cas nominal)
+    try:
+        btn = page.locator(Selectors.pagination_next).first
+        if btn.count() > 0:
+            disabled = btn.is_disabled()
+            aria = (btn.get_attribute("aria-disabled") or "").lower()
+            return not (disabled or aria == "true")
+    except Exception:
+        pass
+    # 2) Repli : un lien ?p=N supérieur à la page courante existe-t-il ?
     try:
         hrefs = page.eval_on_selector_all(
             Selectors.pagination_link,
             "els => els.map(e => e.getAttribute('href')).filter(Boolean)",
         )
         for h in hrefs:
-            m = re.search(r"[?&]p=(\d+)", h)
-            if m:
-                total = max(total, int(m.group(1)))
+            m = re.search(r"[?&]p=(\d+)", h or "")
+            if m and int(m.group(1)) > current_page:
+                return True
     except Exception:
         pass
-    try:
-        body = page.locator("body").inner_text(timeout=3000)
-        # "Page 3 sur 5" → page count. Ne pas matcher "48 sur 200 résultats" (= nb produits).
-        m = re.search(r"\bpage\s+\d+\s+sur\s+(\d+)\b", body, re.IGNORECASE)
-        if m:
-            total = max(total, int(m.group(1)))
-    except Exception:
-        pass
-    return total
+    return False
 
 
 def _page_url(cat_url: str, page_num: int) -> str:
@@ -243,6 +250,63 @@ class ProlianByCategoryScraper:
 
     # ─── Parcours BFS des catégories (générique) ──────────────────────────────
 
+    def _open_category(self, page, url: str) -> bool:
+        """Charge une page de listing et laisse le rendu React se faire.
+
+        Retourne False si la page est injoignable.
+        """
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        except Exception:
+            log.warning("Catégorie injoignable : %s", url)
+            return False
+        # Laisse le listing React se rendre ; sinon ce n'est pas une feuille produit.
+        try:
+            page.wait_for_selector(Selectors.product_card, timeout=8000)
+            page.wait_for_timeout(2000)  # React injecte les cartes après le 1er selector
+        except Exception:
+            pass
+        return True
+
+    def _enqueue_subcategories(self, page, queue: deque, visited_cats: set,
+                               confine: str | None) -> None:
+        """Enfile les sous-catégories liées (confinées au préfixe si filtre actif)."""
+        for sub in _collect_subcategory_paths(page):
+            if sub in visited_cats:
+                continue
+            if confine and not (sub == confine or sub.startswith(confine + "/")):
+                continue
+            queue.append(sub)
+
+    def _paginate_category(self, page, cat_path: str, cat_url: str, collect_fn,
+                           seen: set, items: list, label: str) -> None:
+        """Collecte les items de toutes les pages d'une catégorie (mute seen/items).
+
+        Pagination pilotée par le bouton « Page suivante » (cf. ``_has_next_page``) :
+        on avance page par page tant qu'il existe une suite, avec garde-fou
+        anti-boucle et arrêt dès qu'une page ne contient plus aucun produit.
+        """
+        pnum = 1
+        while pnum <= _MAX_PAGES_PER_CATEGORY:
+            if self._stop_requested:
+                return
+            # Page 1 déjà chargée par l'appelant ; les suivantes via ?p=N.
+            if pnum > 1 and not self._open_category(page, _page_url(cat_url, pnum)):
+                return
+            page_items = collect_fn(page)
+            new_here = 0
+            for it in page_items:
+                if it and it not in seen:
+                    seen.add(it)
+                    items.append(it)
+                    new_here += 1
+            if new_here:
+                log.info("  %s (p%d) — +%d %s [total %d]",
+                         cat_path, pnum, new_here, label, len(items))
+            if not page_items or not _has_next_page(page, pnum):
+                return
+            pnum += 1
+
     def _crawl_categories(self, page, seeds: list[str], confine: str | None,
                           collect_fn, label: str = "produit") -> list:
         """BFS sur l'arbre catégories, paginant chaque catégorie.
@@ -256,56 +320,16 @@ class ProlianByCategoryScraper:
         items: list = []
         seen: set = set()
 
-        while queue:
-            if self._stop_requested:
-                break
+        while queue and not self._stop_requested:
             cat_path = queue.popleft()
             if cat_path in visited_cats:
                 continue
             visited_cats.add(cat_path)
             cat_url = _to_full_url(cat_path)
-
-            try:
-                page.goto(cat_url, wait_until="domcontentloaded", timeout=25000)
-            except Exception:
-                log.warning("Catégorie injoignable : %s", cat_url)
+            if not self._open_category(page, cat_url):
                 continue
-            # Laisse le listing React se rendre ; sinon ce n'est pas une feuille produit
-            try:
-                page.wait_for_selector(Selectors.product_card, timeout=8000)
-                page.wait_for_timeout(2000)  # React injecte les cartes après le 1er selector
-            except Exception:
-                pass
-
-            # Enfile les sous-catégories (confinées au préfixe si filtre actif)
-            for sub in _collect_subcategory_paths(page):
-                if sub in visited_cats:
-                    continue
-                if confine and not (sub == confine or sub.startswith(confine + "/")):
-                    continue
-                queue.append(sub)
-
-            # Collecte sur toutes les pages de cette catégorie
-            total_pages = _detect_total_pages(page)
-            for pnum in range(1, total_pages + 1):
-                if self._stop_requested:
-                    break
-                if pnum > 1:
-                    try:
-                        page.goto(_page_url(cat_url, pnum), wait_until="domcontentloaded", timeout=25000)
-                        page.wait_for_selector(Selectors.product_card, timeout=8000)
-                        page.wait_for_timeout(2000)  # React injecte les cartes après le 1er selector
-                    except Exception:
-                        continue
-                new_here = 0
-                for it in collect_fn(page):
-                    if it and it not in seen:
-                        seen.add(it)
-                        items.append(it)
-                        new_here += 1
-                if new_here:
-                    log.info("  %s (p%d/%d) — +%d %s [total %d]",
-                             cat_path, pnum, total_pages, new_here, label, len(items))
+            self._enqueue_subcategories(page, queue, visited_cats, confine)
+            self._paginate_category(page, cat_path, cat_url, collect_fn, seen, items, label)
 
         log.info("Parcours terminé : %d catégorie(s) visitée(s), %d %s unique(s)",
                  len(visited_cats), len(items), label)
