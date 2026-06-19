@@ -621,9 +621,12 @@ class ScraperApp(tk.Tk):
         if self._async_loop and self._async_task:
             self._async_loop.call_soon_threadsafe(self._async_task.cancel)
         # 3. Fermeture immédiate du navigateur Botasaurus si disponible
+        # (close() async → géré dans le finally de run() ; seul le close() sync est appelé ici)
         if self._scraper and hasattr(self._scraper, "close"):
             try:
-                self._scraper.close()
+                import inspect
+                if not inspect.iscoroutinefunction(self._scraper.close):
+                    self._scraper.close()
             except Exception:
                 pass
         # 4. Injection ctypes : toujours pour Playwright (context manager ferme le navigateur),

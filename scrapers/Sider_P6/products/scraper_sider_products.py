@@ -78,10 +78,16 @@ class SiderProductScraper(BaseScraper):
     async def _connexion(self, page: Page) -> None:
         """Connexion au compte Sider. Ignorée si la session est déjà active.
 
-        Détection : si #_email est absent après clic sur account_icon,
-        la session est toujours valide et on sort immédiatement.
+        Détection : si account_icon est absent, la session est valide (bouton
+        "Création de compte/Connexion" n'apparaît que pour un visiteur non connecté).
+        Sinon, on clique, puis on vérifie la présence de #_email pour confirmer.
         """
-        await page.locator(Selectors.account_icon).click()
+        icon = page.locator(Selectors.account_icon)
+        if await icon.count() == 0:
+            self.log.info("Session déjà active — icône connexion absente")
+            return
+
+        await icon.click()
         await page.wait_for_load_state("domcontentloaded")
 
         if await page.locator(Selectors.email_input).count() == 0:
@@ -184,7 +190,7 @@ class SiderProductScraper(BaseScraper):
             next_el = page.locator(Selectors.pagination_next)
             if await next_el.count() == 0:
                 break
-            next_href = await next_el.get_attribute("href") or ""
+            next_href = await next_el.first.get_attribute("href") or ""
             if not next_href:
                 break
             full_next = (

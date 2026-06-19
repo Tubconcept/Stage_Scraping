@@ -280,7 +280,7 @@ def _extract_attrs(d, selectors: dict) -> str:
                 label = " ".join(tds[0].text.split()).strip()
                 value = " ".join(tds[1].text.split()).strip()
                 if label and value:
-                    attrs.append(f"{label}={value}")
+                    attrs.append(f"{label}:{value}")
     except Exception:
         pass
     return "||".join(attrs)
@@ -432,7 +432,13 @@ class LegallaisScraper:
 
         # Tenter de restaurer la session du jour
         if load_cookies_for_driver(d):
-            d.get(BASE_URL)
+            # Legallais redirige les utilisateurs connectés depuis BASE_URL vers /tableau-de-bord
+            # dont le readyState peut ne jamais atteindre 'complete'. On navigue vers une page
+            # légère (login) pour vérifier la session sans risquer un timeout infini.
+            try:
+                d.get(BASE_URL)
+            except Exception:
+                pass  # timeout partiel OK : le navigateur a quand même chargé quelque chose
             try:
                 d.wait_for_element(".o-menu__items__list", 5)
                 # Vérification positive : le lien "Mon compte" n'existe que si connecté

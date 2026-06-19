@@ -273,7 +273,7 @@ def _persist_rows(
             mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
             insert_product(db_conn, "legallais", mapped)
         except Exception as _db_exc:
-            log.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
+            log.warning(f"[Worker {batch_id}] MariaDB échec insert : {_db_exc}")
 
 
 def _process_item(
@@ -430,10 +430,39 @@ def _browse_category(
 
 def _run_browse_mode(driver, scraper, db_conn, category_filter) -> None:
     """Full browse-mode session: navigate menu, collect and scrape all products."""
-    driver.get(BASE_URL)
-    driver.wait_for_element(".o-menu__items__list")
-    driver.move_mouse_to_element(SELECTOR)
-    driver.click(SELECTOR)
+    log.info("Vérification du menu de navigation…")
+    # Le menu global est présent sur toutes les pages Legallais (y compris tableau de bord).
+    # On évite driver.get(BASE_URL) car Legallais redirige les utilisateurs connectés vers
+    # /tableau-de-bord dont le readyState ne passe jamais à 'complete' (scripts tiers en attente).
+    menu_found = False
+    try:
+        driver.wait_for_element(".o-menu__items__list", 8)
+        menu_found = True
+    except Exception:
+        pass
+    if not menu_found:
+        log.info("Menu introuvable sur la page courante — tentative de navigation vers l'accueil")
+        try:
+            driver.get(BASE_URL)
+        except Exception as _nav_exc:
+            log.error(f"Impossible de charger {BASE_URL} : {_nav_exc}")
+        try:
+            driver.wait_for_element(".o-menu__items__list", 10)
+            menu_found = True
+        except Exception:
+            log.warning("Menu principal introuvable après navigation — abandon")
+            return
+    log.info("Menu trouvé — ouverture du catalogue produits")
+    try:
+        driver.move_mouse_to_element(SELECTOR)
+        driver.click(SELECTOR)
+    except Exception as _click_exc:
+        log.warning(f"Clic sur {SELECTOR} échoué ({_click_exc}) — tentative directe")
+        try:
+            driver.click(SELECTOR)
+        except Exception as _click2_exc:
+            log.error(f"Impossible de cliquer sur le menu produits : {_click2_exc}")
+            return
     categories = [c for c in scraper.get_categories(category_filter) if "guides-de-choix" not in c]
     log.info(f"{len(categories)} catégories trouvées")
     visited_urls: set = get_scraped_product_urls(db_conn, "legallais") if db_conn else set()

@@ -289,7 +289,7 @@ def extract_product_from_dom(page):
         for i in range(rows.count()):
             tds = rows.nth(i).locator("td")
             if tds.count() >= 2:
-                attrs.append(f"{tds.nth(0).inner_text()}={tds.nth(1).inner_text()}")
+                attrs.append(f"{tds.nth(0).inner_text()}:{tds.nth(1).inner_text()}")
         data["product_attributes"] = "||".join(attrs)
     except Exception:
         pass

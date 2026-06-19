@@ -190,8 +190,8 @@ def main():
                             db_row = dict(row)
                             db_row["product_fournisseur_url"] = url
                             insert_product(db_conn, "prolians", db_row)
-                        except Exception:
-                            pass
+                        except Exception as _db_exc:
+                            log.warning(f"MariaDB échec insert : {_db_exc}")
                 scraped_urls.add(url)  # marque comme traité même si insert partiel
                 count_produit += 1
                 log.info(f"[{count_produit}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
@@ -264,6 +264,7 @@ class ProlianProductScraper:
                 session.cookies.set(c["name"], c["value"], domain=c.get("domain", ".prolians.fr"))
 
             try:
+                log.info("Chargement du sitemap index…")
                 sitemap_files   = extract_sitemap_urls(session, SITEMAP_INDEX)
                 product_sitemap = next((u for u in sitemap_files if "product" in u), None)
                 if not product_sitemap:
@@ -272,10 +273,25 @@ class ProlianProductScraper:
                     if db_conn:
                         db_conn.close()
                     return
+                if self._stop_requested:
+                    log.info("Arrêt demandé (sitemap).")
+                    browser.close()
+                    if db_conn:
+                        db_conn.close()
+                    return
                 all_files = extract_sitemap_urls(session, product_sitemap)
+                log.info(f"Chargement des URLs produit — {len(all_files)} fichiers sitemap…")
                 product_urls: list = []
-                for f in all_files:
+                for i, f in enumerate(all_files, 1):
+                    if self._stop_requested:
+                        log.info("Arrêt demandé (chargement sitemap).")
+                        browser.close()
+                        if db_conn:
+                            db_conn.close()
+                        return
                     product_urls.extend(extract_sitemap_urls(session, f))
+                    if i % 10 == 0:
+                        log.info(f"  Sitemap {i}/{len(all_files)} — {len(product_urls)} URLs chargées")
             except Exception as _sm_exc:
                 log.error("Erreur lors de la lecture du sitemap : %s", _sm_exc)
                 browser.close()
@@ -334,8 +350,8 @@ class ProlianProductScraper:
                             db_row = dict(row)
                             db_row["product_fournisseur_url"] = url
                             insert_product(db_conn, "prolians", db_row)
-                        except Exception:
-                            pass
+                        except Exception as _db_exc:
+                            log.warning(f"MariaDB échec insert : {_db_exc}")
                 scraped_urls.add(url)
                 count += 1
                 log.info(f"[{count}] {rows[0]['product_reference_fournisseur']} ({len(rows)} ligne(s))")
