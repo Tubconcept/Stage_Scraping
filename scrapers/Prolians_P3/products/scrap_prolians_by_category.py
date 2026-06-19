@@ -167,7 +167,8 @@ def _detect_total_pages(page) -> int:
         pass
     try:
         body = page.locator("body").inner_text(timeout=3000)
-        m = re.search(r"\b\d+\s+sur\s+(\d+)\b", body, re.IGNORECASE)
+        # "Page 3 sur 5" → page count. Ne pas matcher "48 sur 200 résultats" (= nb produits).
+        m = re.search(r"\bpage\s+\d+\s+sur\s+(\d+)\b", body, re.IGNORECASE)
         if m:
             total = max(total, int(m.group(1)))
     except Exception:
@@ -271,7 +272,8 @@ class ProlianByCategoryScraper:
                 continue
             # Laisse le listing React se rendre ; sinon ce n'est pas une feuille produit
             try:
-                page.wait_for_selector(Selectors.product_card, timeout=4000)
+                page.wait_for_selector(Selectors.product_card, timeout=8000)
+                page.wait_for_timeout(2000)  # React injecte les cartes après le 1er selector
             except Exception:
                 pass
 
@@ -291,7 +293,8 @@ class ProlianByCategoryScraper:
                 if pnum > 1:
                     try:
                         page.goto(_page_url(cat_url, pnum), wait_until="domcontentloaded", timeout=25000)
-                        page.wait_for_selector(Selectors.product_card, timeout=4000)
+                        page.wait_for_selector(Selectors.product_card, timeout=8000)
+                        page.wait_for_timeout(2000)  # React injecte les cartes après le 1er selector
                     except Exception:
                         continue
                 new_here = 0
