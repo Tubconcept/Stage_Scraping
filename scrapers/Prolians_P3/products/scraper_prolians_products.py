@@ -389,28 +389,67 @@ def extract_product_from_dom(page):
     except Exception:
         pass
 
+    # ── Collecte toutes les réfs PROLIANS visibles sur la page ──────────────────
+    # Le tableau de déclinaisons en bas affiche toutes les refs sans clic radio.
+    # re.findall capture la liste complète dans l'ordre du document.
+    _inline_text = ""
+    try:
+        _items = page.locator(Selectors.inline_list_item)
+        for _j in range(_items.count()):
+            try:
+                _inline_text += " " + _items.nth(_j).inner_text(timeout=3000).strip()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    _seen_pr: set = set()
+    _all_prolians_refs: list = []
+    for _m in re.finditer(r"Réf\.\s*PROLIANS\s*[: ]\s*(\S+)", _inline_text):
+        _r = _m.group(1)
+        if _r not in _seen_pr:
+            _seen_pr.add(_r)
+            _all_prolians_refs.append(_r)
+
     # ---------------- COMBINATIONS / DÉCLINAISONS
     rows = []
     try:
-        radios = page.locator(Selectors.combinations)
-        if radios.count() > 0:
-            # Produit avec variantes — une ligne CSV par déclinaison
+        radios   = page.locator(Selectors.combinations)
+        has_radio = radios.count() > 0
+        # Produit combiné si boutons radio détectés OU plusieurs refs PROLIANS en page
+        is_combi  = has_radio or len(_all_prolians_refs) > 1
+
+        if is_combi:
             data["products_is_combination"] = "True"
-            data["product_parent_reference"] = ref_prolians_init
+            # Parent = première ref dans l'ordre du document
+            data["product_parent_reference"] = (
+                _all_prolians_refs[0] if _all_prolians_refs else ref_prolians_init
+            )
+            # child_refs = toutes les refs trouvées sur la page
+            full_child_refs = (
+                "||".join(_all_prolians_refs) if _all_prolians_refs else ref_prolians_init
+            )
 
-            declinaisons = _extract_declinaisons(page, radios)
+            if has_radio:
+                declinaisons = _extract_declinaisons(page, radios)
+            else:
+                # Pas de bouton radio → construit les déclinaisons depuis les refs de page
+                declinaisons = [
+                    {
+                        "label":        r,
+                        "code_p":       r,
+                        "ref_fab":      ref_fab_init,
+                        "ref_prolians": r,
+                        "price":        price_init,
+                        "stock":        stock_init,
+                        "ean":          ean_init,
+                        "eco_tax":      eco_tax_init,
+                        "reduction":    reduction_init,
+                    }
+                    for r in _all_prolians_refs
+                ]
 
-            # Construit la liste complète de toutes les références (parent + variantes)
-            all_refs = []
-            if ref_prolians_init:
-                all_refs.append(ref_prolians_init)
             for decli in declinaisons:
-                child_r = decli["ref_prolians"] or decli["code_p"]
-                if child_r and child_r not in all_refs:
-                    all_refs.append(child_r)
-            full_child_refs = "||".join(all_refs)
-
-            for idx, decli in enumerate(declinaisons, start=1):
                 row = dict(data)
                 row["product_combination_index"]     = None
                 row["product_combination_values"]    = decli["label"]
