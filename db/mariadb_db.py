@@ -97,14 +97,18 @@ _SENTINEL = _ConnSentinel()
 # Sites pour lesquels seule la table products est nécessaire
 _PRODUCTS_ONLY_SITES: frozenset[str] = frozenset({"sonepar"})
 
+# Seuls ces sites ont des URLs variantes uniques → UNIQUE KEY sur product_fournisseur_url
+_PRODUCTS_URL_UNIQUE: frozenset[str] = frozenset({"legallais"})
+
 
 # ─── Création des tables ──────────────────────────────────────────────────────
 
 def _ensure_tables(site: str) -> None:
     """Crée les tables nécessaires et la séquence de déclinaisons du site."""
     prefix = SITE_PREFIX[site]
+    products_url_unique = "product_fournisseur_url" if site in _PRODUCTS_URL_UNIQUE else None
     all_kinds = [
-        ("products", CSV_HEADERS,          None),
+        ("products", CSV_HEADERS,          products_url_unique),
         ("orders",   ORDERS_CSV_HEADERS,   "id_cmd"),
         ("tracking", TRACKING_CSV_HEADERS, "id_cmd"),
     ]
@@ -122,6 +126,14 @@ def _ensure_tables(site: str) -> None:
                     f"    {col_defs}{unique_clause}\n"
                     f") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
                 )
+                # Ajoute la contrainte UNIQUE si la table existait déjà sans elle
+                if unique_col:
+                    try:
+                        cur.execute(
+                            f"ALTER TABLE `{table}` ADD UNIQUE KEY `uq_{table}` (`{unique_col}`(255))"
+                        )
+                    except pymysql.Error:
+                        pass  # contrainte déjà présente
                 _log.debug("Table prête : %s", table)
             # Séquence globale d'index pour les groupes de déclinaisons
             cur.execute(
@@ -249,6 +261,40 @@ def upsert_product(_conn, site: str, row: dict) -> None:
     except pymysql.Error as e:
         conn.rollback()
         _log.exception("upsert_product(%s) échec : %s | ref=%s", site, e, where_val)
+        raise
+    finally:
+        conn.close()
+
+
+def upsert_product_by_url(_conn, site: str, row: dict) -> None:
+    """INSERT si l'URL produit n'existe pas en base, UPDATE de toutes les colonnes si elle existe.
+
+    S'appuie sur la contrainte UNIQUE KEY de product_fournisseur_url via ON DUPLICATE KEY UPDATE.
+    Fallback INSERT IGNORE si l'URL est vide.
+    """
+    url = str(row.get("product_fournisseur_url", "") or "").strip()
+    if not url:
+        _insert(site, "products", CSV_HEADERS, row, conflict="IGNORE")
+        return
+
+    table  = _table(site, "products")
+    cols   = ", ".join(f"`{h}`" for h in CSV_HEADERS)
+    ph     = ", ".join("%s" for _ in CSV_HEADERS)
+    updates = ", ".join(f"`{h}`=VALUES(`{h}`)" for h in CSV_HEADERS)
+    values  = [str(row.get(h, "") or "") for h in CSV_HEADERS]
+
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO `{table}` ({cols}) VALUES ({ph}) ON DUPLICATE KEY UPDATE {updates}",
+                values,
+            )
+        conn.commit()
+        _log.debug("upsert_product_by_url(%s) url=%s", site, url)
+    except pymysql.Error as e:
+        conn.rollback()
+        _log.exception("upsert_product_by_url(%s) échec : %s | url=%s", site, e, url)
         raise
     finally:
         conn.close()

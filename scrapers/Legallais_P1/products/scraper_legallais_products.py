@@ -275,10 +275,11 @@ def _extract_attrs(d, selectors: dict) -> str:
     attrs: List[str] = []
     try:
         for char_row in d.select_all(selectors["characteristics_table"], 1):
-            tds = char_row.select_all("td", 0)
-            if len(tds) >= 2:
-                label = " ".join(tds[0].text.split()).strip()
-                value = " ".join(tds[1].text.split()).strip()
+            th = char_row.select("th", 0)
+            td = char_row.select("td", 0)
+            if th and td:
+                label = " ".join(th.text.split()).strip()
+                value = " ".join(td.text.split()).strip()
                 if label and value:
                     attrs.append(f"{label}={value}")
     except Exception:
@@ -435,10 +436,11 @@ class LegallaisScraper:
             d.get(BASE_URL)
             try:
                 d.wait_for_element(".o-menu__items__list", 5)
-                # Vérification positive : le lien "Mon compte" n'existe que si connecté
-                if (d.is_element_present("a[aria-label='Mon compte']")
-                        or d.is_element_present("a[href*='/user/my-account']")
-                        or d.is_element_present("a[href*='/user/account']")):
+                # Indicateurs valables de session active sur Legallais
+                if (d.is_element_present("a[href*='/user/index']")
+                        or d.is_element_present("a[href*='deconnexion']")
+                        or d.is_element_present("a[href*='/user/']")
+                        or "/user/" in d.current_url):
                     print("[Legallais] Session restaurée — connexion ignorée.")
                     return
             except Exception:
@@ -448,6 +450,11 @@ class LegallaisScraper:
         # Login complet
         print("[Legallais] Connexion en cours...")
         d.get(LOGIN_URL)
+        # Si le site redirige vers /user/index, la session est encore valide
+        if "/user/" in d.current_url and "connection" not in d.current_url:
+            print("[Legallais] Session encore valide (redirection /user detectée) — connexion ignorée.")
+            save_cookies_from_driver(d)
+            return
         d.wait_for_element(SELECTORS["email"], 10)
         time.sleep(1)
         d.type(SELECTORS["email"], self._email)

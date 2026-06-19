@@ -37,7 +37,7 @@ from core.config import JSON_DIR, CSV_HEADERS
 from css_selectors.legallais import BASE_URL, SELECTORS, CATEGORY_NAMES
 from core.logger import setup_logger
 log = setup_logger("legallais.products")
-from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
+from db.mariadb_db import init_site_db, upsert_product_by_url, get_scraped_product_urls, resolve_decli_index
 
 # Fonctionne à la fois en import package (GUI) et en script standalone (CLI)
 try:
@@ -115,6 +115,21 @@ def _session_perdue(ex: Exception) -> bool:
     """Retourne True si l'exception indique une perte de session Chrome."""
     msg = str(ex).lower()
     return not msg or "target" in msg or "goodbye" in msg or "connection" in msg or "closed" in msg
+
+
+def _guard_session(driver, scraper, url: str) -> None:
+    """Si le site a redirigé vers /user/index, reconnecte et recharge l'URL produit."""
+    if "/user/index" in driver.current_url:
+        log.warning("Redirection /user/index détectée — session expirée, reconnexion...")
+        scraper.connexion()
+        driver.get(url)
+
+
+def _ref_from_url(url: str) -> str:
+    """Extrait le segment numérique final de l'URL comme référence unique de variante."""
+    seg = url.rsplit("/", 1)[-1] if "/" in url else url
+    m = re.search(r"(\d+)$", seg)
+    return m.group(1) if m else ""
 
 
 def _variant_url(base_url: str, variant_ref: str) -> str:
@@ -271,7 +286,14 @@ def _persist_rows(
             is_combo = str(row.get("isCombination", "False")) == "True"
             variant_ref = row.get("productRef", "") if is_combo else ""
             mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
-            insert_product(db_conn, "legallais", mapped)
+
+            # product_reference_fournisseur = ref unique tirée de l'URL (dernier segment)
+            # product_parent_reference reste la ref base du produit (déjà correcte via parentRef)
+            url_ref = _ref_from_url(mapped["product_fournisseur_url"])
+            if url_ref:
+                mapped["product_reference_fournisseur"] = url_ref
+
+            upsert_product_by_url(db_conn, "legallais", mapped)
         except Exception as _db_exc:
             log.debug(f"[Worker {batch_id}] MariaDB ignoré : {_db_exc}")
 
@@ -282,6 +304,7 @@ def _process_item(
     """Process a single product URL: scrape, index combinations, persist. Returns (ok, err)."""
     try:
         driver.get(item["url"])
+        _guard_session(driver, scraper, item["url"])
         try:
             driver.wait_for_element("div.c-price.c-price--final", 5)
         except Exception:
@@ -351,6 +374,7 @@ def _browse_one_product(
     log.info(f"  → Produit {ok + err + 1} : {full_href}")
     try:
         driver.get(full_href)
+        _guard_session(driver, scraper, full_href)
         rows = scraper.scrape_product()
         item = {"url": full_href, "cat1": cat1, "cat2": cat2, "cat3": cat3}
         if rows:
