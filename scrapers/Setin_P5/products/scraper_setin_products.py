@@ -821,8 +821,9 @@ class SetinProductScraper(BaseScraper):
             c for c in (cat1, cat2, cat3) if c and c != "fail"
         )
         images = produit.get("productImages") or produit.get("image", "")
-        is_combo = produit.get("IsCombination", False)
         variant_ref = produit.get("ref", "")
+        group_refs  = str(produit.get("group_refs", "") or "")
+        is_combo    = produit.get("IsCombination", False) or ("||" in group_refs)
         fournisseur_url = f"{source_url}?idvar={variant_ref}" if is_combo and variant_ref else source_url
         return {
             "product_fournisseur": "P5",

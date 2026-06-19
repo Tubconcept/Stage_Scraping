@@ -288,10 +288,17 @@ def _persist_rows(
             mapped["product_fournisseur_url"] = _variant_url(item.get("url", ""), variant_ref)
 
             # product_reference_fournisseur = ref unique tirée de l'URL (dernier segment)
-            # product_parent_reference reste la ref base du produit (déjà correcte via parentRef)
             url_ref = _ref_from_url(mapped["product_fournisseur_url"])
             if url_ref:
                 mapped["product_reference_fournisseur"] = url_ref
+
+            # product_parent_reference = première ref du groupe (childRefs[0]) si déclinaison,
+            # sinon la ref du produit lui-même
+            _child_refs = row.get("childRefs", "") or ""
+            _first_ref  = _child_refs.split("||")[0] if _child_refs else ""
+            mapped["product_parent_reference"] = (
+                _first_ref or row.get("productRef", "") or mapped.get("product_reference_fournisseur", "")
+            )
 
             upsert_product_by_url(db_conn, "legallais", mapped)
         except Exception as _db_exc:
