@@ -331,7 +331,9 @@ class ScraperApp(tk.Tk):
         row = tk.Frame(self._action_frm, bg=BG)
         row.pack(pady=5)
         self._action_btns: dict[str, tk.Button] = {}
-        for label, key in [("Produits", "produits"), ("Commandes", "commandes"),
+        for label, key in [("Produits", "produits"), ("Catalogue léger", "catalogue_light"),
+                            ("MAJ prix/stock", "maj_prixstock"),
+                            ("Commandes", "commandes"),
                             ("Suivi Commandes", "suivi"), ("Suppression Adresses", "suppr"),
                             ("Màj par références", "refs")]:
             b = tk.Button(row, text=label, font=("Helvetica", 10),
@@ -346,7 +348,8 @@ class ScraperApp(tk.Tk):
         # pack() déclenché dans _select_action
         self._panels: dict[str, tk.Frame] = {
             k: self._make_panel(k)
-            for k in ("produits", "commandes", "suivi", "suppr", "refs")
+            for k in ("produits", "catalogue_light", "maj_prixstock",
+                      "commandes", "suivi", "suppr", "refs")
         }
 
     def _make_panel(self, key: str) -> tk.Frame:
@@ -355,11 +358,13 @@ class ScraperApp(tk.Tk):
         ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(0, 8))
 
         _TITLES = {
-            "produits":  "Scraping Produits",
-            "commandes": "Scraping Commandes",
-            "suivi":     "Suivi Commandes",
-            "suppr":     "Suppression d'adresses",
-            "refs":      "Mise à jour par références",
+            "produits":        "Scraping Produits",
+            "catalogue_light": "Catalogue léger (GraphQL)",
+            "maj_prixstock":   "MAJ prix / stock (GraphQL)",
+            "commandes":       "Scraping Commandes",
+            "suivi":           "Suivi Commandes",
+            "suppr":           "Suppression d'adresses",
+            "refs":            "Mise à jour par références",
         }
         tk.Label(frm, text=_TITLES[key],
                  font=("Helvetica", 13, "bold"), bg=BG, fg=BLACK).pack()
@@ -372,7 +377,7 @@ class ScraperApp(tk.Tk):
         frm.input_area = tk.Frame(frm, bg=BG)
         frm.input_area.pack(pady=6)
 
-        if key == "produits":
+        if key in ("produits", "catalogue_light"):
             row = tk.Frame(frm.input_area, bg=BG)
             tk.Label(row, text="Catégorie :", font=("Helvetica", 10),
                      bg=BG, fg=BLACK).pack(side="left")
@@ -382,6 +387,19 @@ class ScraperApp(tk.Tk):
                                           font=("Helvetica", 10))
             frm.cat_combo.pack(side="left", padx=8)
             frm.cat_row = row
+            if key == "catalogue_light":
+                tk.Label(frm.input_area,
+                         text="Rapide (API GraphQL) : réf, nom, marque, prix, stock, "
+                              "catégorie, conditionnement — sans description/images.",
+                         font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
+                         wraplength=620, justify="center").pack(pady=(4, 0))
+
+        elif key == "maj_prixstock":
+            tk.Label(frm.input_area,
+                     text="Met à jour prix / stock / disponibilité / conditionnement de tous "
+                          "les produits déjà en base, via l'API GraphQL (rapide).",
+                     font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
+                     wraplength=620, justify="center").pack(pady=(2, 4))
 
         elif key == "refs":
             tk.Label(frm.input_area,
@@ -494,6 +512,9 @@ class ScraperApp(tk.Tk):
     # Actions disponibles par site (clés absentes → bouton masqué)
     _SITE_AVAILABLE_ACTIONS: dict[str, set[str]] = {
         "Sonepar": {"produits", "refs", "commandes", "suivi", "suppr"},
+        # Prolians : 2 modes GraphQL en plus (catalogue léger + MAJ prix/stock)
+        "Prolians": {"produits", "catalogue_light", "maj_prixstock",
+                     "commandes", "suivi", "suppr", "refs"},
     }
     _ALL_ACTIONS: set[str] = {"produits", "commandes", "suivi", "suppr", "refs"}
 
@@ -531,7 +552,7 @@ class ScraperApp(tk.Tk):
         panel.pack(fill="x")
         panel.lbl_site.config(text=f"Site : {self._site}")
 
-        if key == "produits":
+        if key in ("produits", "catalogue_light"):
             cfg = SITES_CONFIG.get(self._site, {})
             if cfg.get("has_categories"):
                 panel.cat_row.pack()
@@ -656,9 +677,11 @@ class ScraperApp(tk.Tk):
         site_key = _SITE_KEYS.get(self._site, self._site.lower())
 
         _ACTION_INFO = {
-            "produits":  ("products",  CSV_HEADERS),
-            "commandes": ("orders",    ORDERS_CSV_HEADERS),
-            "suivi":     ("tracking",  TRACKING_CSV_HEADERS),
+            "produits":        ("products",  CSV_HEADERS),
+            "catalogue_light": ("products",  CSV_HEADERS),
+            "maj_prixstock":   ("products",  CSV_HEADERS),
+            "commandes":       ("orders",    ORDERS_CSV_HEADERS),
+            "suivi":           ("tracking",  TRACKING_CSV_HEADERS),
         }
         table_suffix, headers = _ACTION_INFO[key]
         from db.mariadb_db import SITE_PREFIX, export_table_to_csv
@@ -920,10 +943,22 @@ class ScraperApp(tk.Tk):
             return
 
         if key == "produits":
+            cat     = panel.cat_var.get() if cfg.get("has_categories") else ""
             mod     = import_module(cfg["imports"]["produits"])
-            scraper = mod.create_scraper()
+            scraper = mod.create_scraper(category_name=cat)
             self._start_async(key, scraper.run(), scraper,
                               lambda: self._latest_csv("scrap_p3_products_*.csv"))
+
+        elif key == "catalogue_light":
+            cat     = panel.cat_var.get() if cfg.get("has_categories") else ""
+            mod     = import_module(cfg["imports"]["catalogue_light"])
+            scraper = mod.create_scraper(category_name=cat)
+            self._start_async(key, scraper.run(), scraper, lambda: "")
+
+        elif key == "maj_prixstock":
+            mod     = import_module(cfg["imports"]["maj_prixstock"])
+            scraper = mod.create_scraper()
+            self._start_async(key, scraper.run(), scraper, lambda: "")
 
         elif key == "commandes":
             df, dt = self._read_dates(panel)
