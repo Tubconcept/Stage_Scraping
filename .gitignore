@@ -223,6 +223,9 @@ __marimo__/
 playwright_profiles/
 data/imports/
 
+# Logs d'erreur des scrapers (page HTML + screenshot capturés en cas d'échec)
+error_logs/
+
 # Bases SQLite
 *.db
 *.db-shm
