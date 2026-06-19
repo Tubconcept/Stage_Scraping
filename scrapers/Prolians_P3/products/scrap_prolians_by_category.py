@@ -127,6 +127,27 @@ def _collect_product_hrefs(page) -> list[str]:
         return []
 
 
+def _collect_product_refs(page) -> list[str]:
+    """Retourne les références (SKU) lues sur les cartes produit de la page.
+
+    Utilisé par le mode catalogue GraphQL : la référence article (8 chiffres)
+    est plus fiable que le suffixe du slug d'URL (qui n'est pas toujours la réf).
+    """
+    try:
+        texts = page.eval_on_selector_all(
+            Selectors.search_result_ref,  # span[data-testid="product-card/reference"]
+            "els => els.map(e => (e.textContent || '').trim())",
+        )
+    except Exception:
+        return []
+    refs = []
+    for t in texts:
+        m = re.search(r"\d{6,}", t or "")
+        if m:
+            refs.append(m.group(0))
+    return refs
+
+
 def _detect_total_pages(page) -> int:
     """Déduit le nombre total de pages d'une catégorie (pagination ?p=N).
 
@@ -219,14 +240,20 @@ class ProlianByCategoryScraper:
             seeds = [f"/nos-produits/{slug}" for slug in Selectors.CATEGORY_URLS.values()]
         return seeds, None
 
-    # ─── Parcours BFS des catégories → URLs produit ───────────────────────────
+    # ─── Parcours BFS des catégories (générique) ──────────────────────────────
 
-    def _crawl_product_urls(self, page, seeds: list[str], confine: str | None) -> list[str]:
-        """BFS sur l'arbre catégories. Retourne les URLs produit dédupliquées."""
+    def _crawl_categories(self, page, seeds: list[str], confine: str | None,
+                          collect_fn, label: str = "produit") -> list:
+        """BFS sur l'arbre catégories, paginant chaque catégorie.
+
+        ``collect_fn(page)`` extrait les items d'une page de listing (URLs ou
+        références). Retourne la liste dédupliquée dans l'ordre de découverte.
+        Le confinement (``confine``) restreint le parcours à une branche.
+        """
         visited_cats: set[str] = set()
         queue: deque[str] = deque(dict.fromkeys(seeds))  # dédup en gardant l'ordre
-        product_paths: list[str] = []
-        seen_products: set[str] = set()
+        items: list = []
+        seen: set = set()
 
         while queue:
             if self._stop_requested:
@@ -256,7 +283,7 @@ class ProlianByCategoryScraper:
                     continue
                 queue.append(sub)
 
-            # Collecte les produits sur toutes les pages de cette catégorie
+            # Collecte sur toutes les pages de cette catégorie
             total_pages = _detect_total_pages(page)
             for pnum in range(1, total_pages + 1):
                 if self._stop_requested:
@@ -268,19 +295,31 @@ class ProlianByCategoryScraper:
                     except Exception:
                         continue
                 new_here = 0
-                for href in _collect_product_hrefs(page):
-                    p = _norm_path(href)
-                    if p and p not in seen_products:
-                        seen_products.add(p)
-                        product_paths.append(p)
+                for it in collect_fn(page):
+                    if it and it not in seen:
+                        seen.add(it)
+                        items.append(it)
                         new_here += 1
                 if new_here:
-                    log.info("  %s (p%d/%d) — +%d produit(s) [total %d]",
-                             cat_path, pnum, total_pages, new_here, len(product_paths))
+                    log.info("  %s (p%d/%d) — +%d %s [total %d]",
+                             cat_path, pnum, total_pages, new_here, label, len(items))
 
-        log.info("Parcours terminé : %d catégorie(s) visitée(s), %d produit(s) uniques",
-                 len(visited_cats), len(product_paths))
-        return [_to_full_url(p) for p in product_paths]
+        log.info("Parcours terminé : %d catégorie(s) visitée(s), %d %s unique(s)",
+                 len(visited_cats), len(items), label)
+        return items
+
+    def _crawl_product_urls(self, page, seeds: list[str], confine: str | None) -> list[str]:
+        """BFS → URLs produit absolues, dédupliquées."""
+        paths = self._crawl_categories(
+            page, seeds, confine,
+            lambda pg: [_norm_path(h) for h in _collect_product_hrefs(pg)],
+            label="produit",
+        )
+        return [_to_full_url(p) for p in paths]
+
+    def _crawl_product_refs(self, page, seeds: list[str], confine: str | None) -> list[str]:
+        """BFS → références produit (SKU), dédupliquées. Pour le mode GraphQL."""
+        return self._crawl_categories(page, seeds, confine, _collect_product_refs, label="réf")
 
     # ─── Extraction + persistance d'un produit (logique alignée sur le mode sitemap) ─
 
