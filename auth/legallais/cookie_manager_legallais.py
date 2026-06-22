@@ -190,24 +190,27 @@ def accept_cookies(page: Page) -> None:
 
 # ─── Vérification session ─────────────────────────────────────────────────────
 
+# Lien de déconnexion = signal le plus FIABLE d'une session active. Les anciens
+# libellés « Mon compte » ont changé sur le site et ne matchent plus.
+LOGOUT_LINK_SELECTOR = "a[href*='logout'], a[href*='deconnexion'], a[href*='disconnect']"
+LOGIN_FORM_SELECTOR  = "input[name='connexion[login]'], #connection-id"
+
+
 def is_logged_in(page: Page) -> bool:
-    """Vérifie si le compte Legallais est connecté sur la page courante."""
+    """Vérifie si le compte Legallais est connecté sur la page courante.
+
+    Signal principal : présence d'un lien de déconnexion. Repli : on est sur un
+    espace ``/user/*`` (hors page de connexion) sans formulaire de login affiché.
+
+    On n'utilise PLUS « formulaire de login absent + menu présent » : c'était un
+    faux positif (vrai même DÉCONNECTÉ sur la page d'accueil → le scraper sautait
+    le login puis échouait sur /user/order).
+    """
     try:
-        # Indicateurs positifs de connexion
-        if page.locator("a[href*='/user/my-account']").count() > 0:
+        if page.locator(LOGOUT_LINK_SELECTOR).count() > 0:
             return True
-        if page.locator("a[href*='/user/account']").count() > 0:
-            return True
-        if page.locator("a[aria-label='Mon compte']").count() > 0:
-            return True
-        # URL d'espace client (hors page de connexion)
         if "/user/" in page.url and "connection" not in page.url:
-            return True
-        # Formulaire de login absent = probablement connecté
-        if page.locator("input[name='connexion[login]']").count() == 0:
-            nav = page.locator(".o-menu__items__list, nav.o-header__nav")
-            if nav.count() > 0:
-                return True
+            return page.locator(LOGIN_FORM_SELECTOR).count() == 0
     except Exception:
         pass
     return False

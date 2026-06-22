@@ -131,7 +131,33 @@ def _click_if_present(driver: Driver, css: str) -> bool:
 
 
 # ─── Authentification ─────────────────────────────────────────────────────────
-URL_SITE = "https://www.legallais.com" 
+URL_SITE = "https://www.legallais.com"
+
+# Lien de déconnexion = signal le plus FIABLE d'une session active. Les anciens
+# libellés « Mon compte » ont changé sur le site et ne matchent plus → ils
+# donnaient un faux « session expirée », d'où une tentative de login alors que
+# /user/connection redirige (déjà connecté) vers l'espace client sans formulaire.
+LOGOUT_LINK = "a[href*='logout'], a[href*='deconnexion'], a[href*='disconnect']"
+LOGIN_FORM  = "#connection-id, input[name='connexion[login]']"
+
+
+def _is_logged_in(driver: Driver) -> bool:
+    """Vrai si la session Legallais est active.
+
+    Signal principal : présence d'un lien de déconnexion. Repli : on est sur un
+    espace ``/user/*`` (hors page de connexion) sans formulaire de login affiché.
+    """
+    try:
+        if driver.is_element_present(LOGOUT_LINK):
+            return True
+        url = driver.current_url or ""
+        if "/user/" in url and "connection" not in url:
+            return not driver.is_element_present(LOGIN_FORM)
+    except Exception:
+        pass
+    return False
+
+
 def connexion(driver: Driver, email: str, password: str) -> None:
     assert email and password, "Renseignez LEGALLAIS_EMAIL et LEGALLAIS_PASSWORD"
     from auth.legallais.cookie_manager_legallais import (
@@ -149,10 +175,7 @@ def connexion(driver: Driver, email: str, password: str) -> None:
     if load_cookies_for_driver(driver):
         driver.get(BASE_URL)
         _wait_for(driver, ".o-menu__items__list", timeout=5)
-        # Vérification positive : le lien "Mon compte" n'existe que si connecté
-        if (driver.is_element_present("a[aria-label='Mon compte']")
-                or driver.is_element_present("a[href*='/user/my-account']")
-                or driver.is_element_present("a[href*='/user/account']")):
+        if _is_logged_in(driver):
             log.info("Session restaurée — connexion ignorée.")
             return
         log.info("Session expirée — nouvelle connexion en cours...")
@@ -160,7 +183,14 @@ def connexion(driver: Driver, email: str, password: str) -> None:
     # Login complet
     log.info("Connexion en cours...")
     driver.get(LOGIN_URL)
-    _wait_for(driver, EMAIL_INPUT, timeout=10)
+    if not _wait_for(driver, EMAIL_INPUT, timeout=10):
+        # Pas de formulaire : le plus souvent on est DÉJÀ connecté et
+        # /user/connection a redirigé vers l'espace client (session encore valide).
+        if _is_logged_in(driver):
+            log.info("Déjà connecté (redirection depuis /user/connection) — login ignoré.")
+            save_cookies_from_driver(driver)
+            return
+        raise RuntimeError("Formulaire de connexion Legallais introuvable sur /user/connection")
     time.sleep(1)
     driver.type(EMAIL_INPUT, email)
     time.sleep(1)
