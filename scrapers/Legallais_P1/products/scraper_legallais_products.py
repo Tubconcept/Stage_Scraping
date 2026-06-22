@@ -226,9 +226,8 @@ def _extract_price(d, selectors: dict) -> str:
             except Exception:
                 continue
         if price_el:
-            raw = price_el.text.replace("€", "").replace("\xa0", " ")
-            m = re.search(r"(\d[\d ]*[.,]\d+|\d+)", raw)
-            return m.group(1).replace(",", ".").replace(" ", "") if m else ""
+            from core.utils import normalize_price
+            return normalize_price(price_el.text)
     except Exception:
         pass
     return ""

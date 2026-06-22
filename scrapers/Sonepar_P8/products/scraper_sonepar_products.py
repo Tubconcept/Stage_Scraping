@@ -35,6 +35,7 @@ from css_selectors.sonepar import Selectors
 from core.base_scraper import BaseScraper
 from core.config import TIMEOUT_PAGE_LOAD
 from core.logger import log_exception
+from core.utils import normalize_price
 
 load_dotenv()
 
@@ -453,7 +454,7 @@ class _SoneparCSS(BaseScraper):
                 log_exception(self.log, exc, f"ProductRef {url}")
 
             try:
-                prix = _clean(
+                prix = normalize_price(
                     await page.locator(Selectors.product_price).inner_text(timeout=30000)
                 )
             except Exception as exc:

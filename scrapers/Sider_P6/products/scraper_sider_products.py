@@ -31,7 +31,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from css_selectors.sider import Selectors
 from core.base_scraper import BaseScraper
 from core.logger import log_exception
-from core.utils import clean_text
+from core.utils import clean_text, normalize_price
 
 load_dotenv()
 
@@ -39,8 +39,12 @@ load_dotenv()
 # ─── Helpers prix ─────────────────────────────────────────────────────────────
 
 def _clean_price(raw: str) -> str:
-    """Normalise un prix brut : retire €, &nbsp;, remplace virgule par point."""
-    return raw.replace("\xa0", " ").replace("€", "").replace(",", ".").strip()
+    """Normalise un prix brut en numérique « dot-decimal » (cf. core.utils.normalize_price).
+
+    Gère l'espace insécable ET l'espace séparateur de milliers (« 1 752,90 € »
+    → « 1752.90 ») — l'ancienne version laissait l'espace, donnant « 1 752.90 ».
+    """
+    return normalize_price(raw)
 
 
 def _clean_eco_taxe(raw: str) -> str:

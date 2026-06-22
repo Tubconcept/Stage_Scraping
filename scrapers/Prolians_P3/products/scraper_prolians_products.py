@@ -24,6 +24,7 @@ from datetime import datetime
 from css_selectors.prolians import Selectors
 from core.config import CSV_HEADERS
 from core.logger import setup_logger
+from core.utils import normalize_price
 
 log   = setup_logger("prolians.products")
 today = datetime.today().strftime("%Y-%m-%d")
@@ -123,12 +124,7 @@ def _read_refs_and_price(page):
             if elems.count() > 0:
                 raw = elems.first.inner_text(timeout=2000)
                 if raw and "€" in raw:
-                    # Format FR : "1 752,90€ HT / 1 pièce". L'espace (insécable
-                    # \xa0) sépare les milliers → un .split() le coupait à « 1 ».
-                    # On ne garde que chiffres + virgule de la partie avant « € »,
-                    # puis virgule → point décimal.
-                    head = raw.split("€")[0]
-                    price = re.sub(r"[^\d,]", "", head).replace(",", ".")
+                    price = normalize_price(raw)
                     stock = "disponible"
             if not stock:
                 stock = "non disponible"

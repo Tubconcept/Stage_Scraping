@@ -35,7 +35,7 @@ from css_selectors.setin import Selectors
 from core.base_scraper import BaseScraper
 from core.config import CSV_HEADERS, TIMEOUT_LONG
 from core.logger import log_exception
-from core.utils import clean_text
+from core.utils import clean_text, normalize_price
 
 load_dotenv()
 
@@ -528,8 +528,8 @@ class SetinProductScraper(BaseScraper):
         # --- Prix ---
         prix = ""
         try:
-            prix = clean_text(
-                (await page.locator(Selectors.product_price_ht).first.inner_text()).replace("€", "")
+            prix = normalize_price(
+                await page.locator(Selectors.product_price_ht).first.inner_text()
             )
         except Exception as exc:
             log_exception(self.log, exc, f"{url} prix")
@@ -540,7 +540,7 @@ class SetinProductScraper(BaseScraper):
             strike_loc = page.locator(Selectors.product_promotion)
             if await strike_loc.count() > 0:
                 reduc = prix
-                prix = clean_text((await strike_loc.first.inner_text()).replace("€", ""))
+                prix = normalize_price(await strike_loc.first.inner_text())
         except Exception as exc:
             log_exception(self.log, exc, f"{url} réduction")
 
