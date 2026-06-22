@@ -351,24 +351,38 @@ class ProlianByCategoryScraper:
     # ─── Extraction + persistance d'un produit (logique alignée sur le mode sitemap) ─
 
     def _scrape_product(self, page, context, db_conn, url: str, count: int) -> bool:
-        """Charge la fiche, extrait et insère les lignes. True si enregistrée."""
+        """Charge la fiche, extrait et insère les lignes. True si enregistrée.
+
+        Chargement robuste : ``domcontentloaded`` + attente explicite du titre
+        (l'événement ``load`` des pages React Prolians dépasse souvent 5 s).
+
+        Garde-fou de session : une fiche se charge **même déconnecté** (Prolians
+        n'y redirige pas vers le login — il affiche le *prix public* au lieu du
+        prix négocié). On vérifie donc ``is_logged_in`` après chaque chargement et
+        on se reconnecte avant d'extraire si besoin ; sinon une session qui expire
+        en cours de run remplirait la base de prix publics erronés, en silence.
+        """
+        def _load_once() -> bool:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_selector(Selectors.title, timeout=8000)
+                return True
+            except Exception:
+                return False
+
         loaded = False
         for attempt in range(3):
-            try:
-                page.goto(url, wait_until="load", timeout=5000)
-                page.wait_for_selector(Selectors.title, timeout=5000)
+            if _load_once() and is_logged_in(page):
                 loaded = True
                 break
-            except Exception:
-                log.warning(f"Tentative {attempt + 1}/3 échouée : {url}")
+            # Fiche non chargée, ou chargée hors session : reconnexion si déconnecté.
+            if not is_logged_in(page):
+                log.info("Session perdue sur la fiche — reconnexion…")
+                if not ensure_logged_in(page, context, USERNAME, PASSWORD):
+                    raise RuntimeError("Re-login échoué")
+            log.warning(f"Tentative {attempt + 1}/3 échouée : {url}")
         if not loaded:
             return False
-
-        # Contrôle session périodique (le portail déconnecte après inactivité)
-        if count % 20 == 0 and not is_logged_in(page):
-            if not ensure_logged_in(page, context, USERNAME, PASSWORD):
-                raise RuntimeError("Re-login échoué")
-            page.goto(url, wait_until="domcontentloaded", timeout=10000)
 
         rows = extract_product_from_dom(page)
         if not rows:
