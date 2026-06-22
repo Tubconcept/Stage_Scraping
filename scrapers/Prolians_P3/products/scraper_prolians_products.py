@@ -123,7 +123,12 @@ def _read_refs_and_price(page):
             if elems.count() > 0:
                 raw = elems.first.inner_text(timeout=2000)
                 if raw and "€" in raw:
-                    price = raw.replace("€", "").replace(",", ".").split()[0]
+                    # Format FR : "1 752,90€ HT / 1 pièce". L'espace (insécable
+                    # \xa0) sépare les milliers → un .split() le coupait à « 1 ».
+                    # On ne garde que chiffres + virgule de la partie avant « € »,
+                    # puis virgule → point décimal.
+                    head = raw.split("€")[0]
+                    price = re.sub(r"[^\d,]", "", head).replace(",", ".")
                     stock = "disponible"
             if not stock:
                 stock = "non disponible"
@@ -153,6 +158,26 @@ def _read_refs_and_price(page):
 # =============================
 # DÉCLINAISONS
 # =============================
+
+def _select_variant(page, radio) -> None:
+    """Sélectionne une variante et attend le re-render de sa réf PROLIANS.
+
+    L'``<input>`` radio (React Aria) est masqué/intercepté par son habillage CSS
+    → un clic natif tombe en timeout ; ``force=True`` dispatche l'événement
+    directement. La réf PROLIANS n'apparaît qu'APRÈS le re-render (la fiche
+    n'affiche que « Code P » tant qu'aucune variante n'est choisie), d'où l'attente.
+    """
+    radio.click(timeout=3000, force=True)
+    try:
+        page.wait_for_function(
+            "() => Array.from(document.querySelectorAll(\"div[data-testid='inline-list-item']\"))"
+            ".some(e => e.innerText.includes('PROLIANS'))",
+            timeout=4000,
+        )
+    except Exception:
+        pass
+    page.wait_for_timeout(400)
+
 
 def _extract_declinaisons(page, radios):
     """Clique chaque radio, récupère le label et toutes les données mises à jour."""
@@ -199,15 +224,23 @@ def _extract_declinaisons(page, radios):
             full_label = variant_val or f"Déclinaison {i+1}"
 
         try:
-            radio.click(timeout=3000)
-            page.wait_for_timeout(1000)
+            _select_variant(page, radio)
         except KeyboardInterrupt:
             raise
         except Exception as e:
             log.warning(f"Déclinaison {i+1} — erreur clic : {e}")
             continue
 
-        code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction = _read_refs_and_price(page)
+        vals = _read_refs_and_price(page)
+        if not vals[2]:  # ref_prolians vide
+            # Le 1er clic est parfois absorbé par un overlay résiduel de la fiche
+            # (tiroir description fermé juste avant) → on resélectionne et on relit.
+            try:
+                _select_variant(page, radio)
+                vals = _read_refs_and_price(page)
+            except Exception:
+                pass
+        code_p, ref_fab, ref_prolians, price, stock, ean, eco_tax, reduction = vals
 
         log.debug(f"[{i+1}] {full_label} | Code P: {code_p or '—'} | Réf. fab: {ref_fab or '—'} | Prix: {price or '—'} €")
 
@@ -432,6 +465,14 @@ def extract_product_from_dom(page):
 
             if has_radio:
                 declinaisons = _extract_declinaisons(page, radios)
+                # Sur ces fiches la réf PROLIANS n'existe qu'APRÈS sélection d'une
+                # variante (init ne montre que « Code P ») → parent/child collectés
+                # avant clic sont vides : on les reconstruit depuis les variantes.
+                _decli_refs = [d["ref_prolians"] for d in declinaisons if d.get("ref_prolians")]
+                if _decli_refs:
+                    if not data["product_parent_reference"]:
+                        data["product_parent_reference"] = _decli_refs[0]
+                    full_child_refs = "||".join(dict.fromkeys(_decli_refs))
             else:
                 # Pas de bouton radio → construit les déclinaisons depuis les refs de page
                 declinaisons = [
