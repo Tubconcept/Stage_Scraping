@@ -18,6 +18,7 @@ Sélecteurs centralisés dans css_selectors/sider.py (classe Selectors).
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -51,6 +52,23 @@ def _clean_eco_taxe(raw: str) -> str:
     """Normalise une éco-taxe : retourne '' si valeur absente ('-' ou vide)."""
     cleaned = raw.replace("\xa0", "").replace("€", "").replace(",", ".").strip()
     return "" if cleaned in ("-", "") else cleaned
+
+
+def _parse_stock_qty(raw: str) -> str:
+    """Extrait la quantité numérique du libellé de stock Sider.
+
+    « Stock national : 2 118 » → « 2118 ». Gère l'espace (insécable) séparateur
+    de milliers. Cible en priorité le nombre qui suit « Stock national », sinon
+    le premier nombre du texte. Retourne '' si aucun nombre (ex. « Rupture »).
+    """
+    if not isinstance(raw, str):
+        return ""
+    s = raw.replace("\xa0", " ")
+    m = re.search(r"stock\s+national\s*:?\s*([\d ]+)", s, re.IGNORECASE)
+    if not m:
+        m = re.search(r"\d[\d ]*", s)
+        return re.sub(r"\D", "", m.group(0)) if m else ""
+    return re.sub(r"\D", "", m.group(1))
 
 
 # ─── Moteur CSS ───────────────────────────────────────────────────────────────
@@ -358,11 +376,12 @@ class SiderProductScraper(BaseScraper):
             product["description"] = ""
             log_exception(self.log, exc, f"description {url}")
 
-        # Stock — lecture brute du texte de span.stock
+        # Stock — extrait la quantité numérique du libellé
+        # (« Stock national : 2 118 » → « 2118 »)
         try:
             stock_el = page.locator(Selectors.product_stock_status)
             product["stock"] = (
-                clean_text(await stock_el.first.inner_text())
+                _parse_stock_qty(await stock_el.first.inner_text())
                 if await stock_el.count() > 0 else ""
             )
         except Exception as exc:
