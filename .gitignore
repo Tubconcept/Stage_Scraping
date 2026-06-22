@@ -149,6 +149,7 @@ activemq-data/
 
 # Environments
 .env
+*.env          # toute copie/variante (« env - Copie.env », « prod.env »…) — NE PAS committer de secrets
 .envrc
 .venv
 env/
