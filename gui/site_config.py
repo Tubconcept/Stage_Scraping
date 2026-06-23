@@ -48,7 +48,6 @@ SITES_CONFIG = {
             "produits":             "scrapers.Prolians_P3.products.scrap_prolians_by_category",
             "catalogue_complet":    "scrapers.Prolians_P3.products.scrap_prolians_by_sitemap",
             "catalogue_light_full": "scrapers.Prolians_P3.products.scrap_prolians_light_sitemap",
-            "catalogue_light":      "scrapers.Prolians_P3.products.scrap_prolians_light",
             "maj_prixstock":     "scrapers.Prolians_P3.products.scrap_prolians_price_stock",
             "commandes":         "scrapers.Prolians_P3.orders.scrap_prolians_orders",
             "suivi":             "scrapers.Prolians_P3.tracking.scrap_prolians_tracking",
