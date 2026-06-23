@@ -46,17 +46,21 @@ load_dotenv(PROJECT_ROOT / ".env")
 log = setup_logger("sider.products")
 
 _TIMEOUT = 30
-# Concurrence BORNÉE + délai jittered (dans polite_get) = anti-détection : pas de
-# rafale. Le débit effectif ≈ _MAX_WORKERS / délai_moyen (~6/0,6 ≈ 10 req/s).
+# Défauts anti-détection (configurables depuis la GUI / CLI). Concurrence bornée +
+# délai jittered (dans polite_get) = pas de rafale. Débit ≈ workers / délai_moyen.
 _MAX_WORKERS = 6
+_DELAY = (0.3, 0.9)
 _REFERER = "https://www.sider.biz/"
 
 
 class SiderLightSitemapScraper:
     """Catalogue léger COMPLET Sider : sitemap + GET HTTP authentifié (JSON-LD + prix compte)."""
 
-    def __init__(self, limit: int | None = None) -> None:
+    def __init__(self, limit: int | None = None, max_workers: int = _MAX_WORKERS,
+                 delay: tuple[float, float] = _DELAY) -> None:
         self._limit = limit
+        self._max_workers = max(1, int(max_workers))
+        self._delay = delay
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -144,7 +148,7 @@ class SiderLightSitemapScraper:
 
     def _fetch_one(self, url: str, headers: dict) -> dict | None:
         # polite_get : délai jittered + retry/back-off sur rate-limit (anti-détection)
-        html = polite_get(url, headers, timeout=_TIMEOUT,
+        html = polite_get(url, headers, timeout=_TIMEOUT, delay=self._delay,
                           should_stop=lambda: self._stop_requested)
         if not html:
             return None
@@ -173,11 +177,11 @@ class SiderLightSitemapScraper:
         if not urls:
             log.warning("Aucune URL produit (sitemap) — arrêt.")
             return
-        log.info("Sider : %d produit(s) à enrichir (HTTP poli, %d workers)",
-                 len(urls), _MAX_WORKERS)
+        log.info("Sider : %d produit(s) à enrichir (HTTP poli, %d workers, délai %.1f-%.1f s)",
+                 len(urls), self._max_workers, self._delay[0], self._delay[1])
         headers = build_browser_headers(ua=ua, cookie=cookie, referer=_REFERER)
         ok = miss = 0
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        with ThreadPoolExecutor(max_workers=self._max_workers) as ex:
             futs = {ex.submit(self._fetch_one, u, headers): u for u in urls}
             try:
                 for fut in as_completed(futs):
@@ -198,9 +202,10 @@ class SiderLightSitemapScraper:
         log.info("Terminé : %d enrichis, %d sans données", ok, miss)
 
 
-def create_scraper() -> SiderLightSitemapScraper:
-    """Fabrique attendue par la GUI."""
-    return SiderLightSitemapScraper()
+def create_scraper(max_workers: int = _MAX_WORKERS,
+                   delay: tuple[float, float] = _DELAY) -> SiderLightSitemapScraper:
+    """Fabrique attendue par la GUI (réglages anti-détection configurables)."""
+    return SiderLightSitemapScraper(max_workers=max_workers, delay=delay)
 
 
 def main() -> None:
@@ -208,8 +213,16 @@ def main() -> None:
         description="Catalogue léger COMPLET Sider (sitemap + HTTP authentifié).")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limiter le nombre de produits (test).")
+    parser.add_argument("--workers", type=int, default=_MAX_WORKERS,
+                        help=f"Concurrence (défaut {_MAX_WORKERS}).")
+    parser.add_argument("--delay-min", type=float, default=_DELAY[0],
+                        help="Délai aléatoire min par requête (s).")
+    parser.add_argument("--delay-max", type=float, default=_DELAY[1],
+                        help="Délai aléatoire max par requête (s).")
     args = parser.parse_args()
-    asyncio.run(SiderLightSitemapScraper(limit=args.limit).run())
+    asyncio.run(SiderLightSitemapScraper(
+        limit=args.limit, max_workers=args.workers,
+        delay=(args.delay_min, args.delay_max)).run())
 
 
 if __name__ == "__main__":

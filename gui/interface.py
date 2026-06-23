@@ -416,6 +416,24 @@ class ScraperApp(tk.Tk):
                           "lancer ensuite le mode DOM (« Catalogue complet » / « Produits »).",
                      font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
                      wraplength=620, justify="center").pack(pady=(2, 4))
+            # Réglages anti-détection (modes HTTP) — packé seulement pour Sider
+            # (cf. _select_action). Concurrence basse + délai = moins de risque de blocage.
+            trow = tk.Frame(frm.input_area, bg=BG)
+            tk.Label(trow, text="Workers :", font=("Helvetica", 9),
+                     bg=BG, fg=BLACK).pack(side="left")
+            frm.workers_var = tk.IntVar(value=6)
+            tk.Spinbox(trow, from_=1, to=12, width=4, textvariable=frm.workers_var,
+                       font=("Helvetica", 9)).pack(side="left", padx=(2, 12))
+            tk.Label(trow, text="Délai/req. (s)  min", font=("Helvetica", 9),
+                     bg=BG, fg=BLACK).pack(side="left")
+            frm.delay_min_var = tk.DoubleVar(value=0.3)
+            tk.Spinbox(trow, from_=0.0, to=5.0, increment=0.1, width=4, format="%.1f",
+                       textvariable=frm.delay_min_var, font=("Helvetica", 9)).pack(side="left", padx=2)
+            tk.Label(trow, text="max", font=("Helvetica", 9), bg=BG, fg=BLACK).pack(side="left")
+            frm.delay_max_var = tk.DoubleVar(value=0.9)
+            tk.Spinbox(trow, from_=0.0, to=5.0, increment=0.1, width=4, format="%.1f",
+                       textvariable=frm.delay_max_var, font=("Helvetica", 9)).pack(side="left", padx=2)
+            frm.throttle_row = trow
 
         elif key == "maj_prixstock":
             tk.Label(frm.input_area,
@@ -586,6 +604,13 @@ class ScraperApp(tk.Tk):
                     panel.cat_combo.current(0)
             else:
                 panel.cat_row.pack_forget()
+
+        # Réglages anti-détection : seulement pour les modes « Léger complet » HTTP (Sider)
+        if key == "catalogue_light_full" and getattr(panel, "throttle_row", None) is not None:
+            if self._site == "Sider":
+                panel.throttle_row.pack(pady=(4, 0))
+            else:
+                panel.throttle_row.pack_forget()
 
     # ─── Helpers statut ───────────────────────────────────────────────────────
 
@@ -1024,8 +1049,15 @@ class ScraperApp(tk.Tk):
             scraper = mod.create_scraper(category_name=cat)
             self._start_async(key, scraper.run(), scraper, lambda: "")
         elif key == "catalogue_light_full":
-            mod     = import_module(cfg["imports"]["catalogue_light_full"])
-            scraper = mod.create_scraper()
+            mod = import_module(cfg["imports"]["catalogue_light_full"])
+            try:
+                workers    = max(1, int(panel.workers_var.get()))
+                dmin, dmax = float(panel.delay_min_var.get()), float(panel.delay_max_var.get())
+                if dmax < dmin:
+                    dmin, dmax = dmax, dmin
+            except Exception:
+                workers, dmin, dmax = 6, 0.3, 0.9
+            scraper = mod.create_scraper(max_workers=workers, delay=(dmin, dmax))
             self._start_async(key, scraper.run(), scraper, lambda: "")
         else:
             messagebox.showinfo(
