@@ -63,10 +63,11 @@ def _parse_stock_qty(raw: str) -> str:
     """
     if not isinstance(raw, str):
         return ""
-    s = raw.replace("\xa0", " ")
-    m = re.search(r"stock\s+national\s*:?\s*([\d ]+)", s, re.IGNORECASE)
+    # ``[\d\s]`` couvre tous les espaces de milliers (normal, \xa0, fine insécable
+    #  …) ; ``re.sub(r"\D")`` ne garde ensuite que les chiffres.
+    m = re.search(r"stock\s+national\s*:?\s*([\d\s]+)", raw, re.IGNORECASE)
     if not m:
-        m = re.search(r"\d[\d ]*", s)
+        m = re.search(r"\d[\d\s]*", raw)
         return re.sub(r"\D", "", m.group(0)) if m else ""
     return re.sub(r"\D", "", m.group(1))
 

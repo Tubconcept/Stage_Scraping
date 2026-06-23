@@ -63,29 +63,31 @@ def clean_text(text: Any) -> str:
     return text.strip()
 
 
-# Prix FR : « 1 752,90 € » → numérique. ``\d[\d ]*`` capture l'entier avec
-# d'éventuels espaces de milliers, ``(?:[.,]\d+)?`` la décimale optionnelle.
-_PRICE_RE = re.compile(r"\d[\d ]*(?:[.,]\d+)?")
+# Prix FR : « 1 752,90 € » → numérique. ``\d[\d\s]*`` capture l'entier avec
+# d'éventuels espaces de milliers — ``\s`` couvre TOUTES les variantes Unicode :
+# espace normal, insécable \xa0, fine   et **fine insécable  ** (celle
+# réellement utilisée par certains sites, ex. Prolians). ``(?:[.,]\d+)?`` = décimale.
+_PRICE_RE = re.compile(r"\d[\d\s]*(?:[.,]\d+)?")
 
 
 def normalize_price(raw: Any) -> str:
     """Normalise un prix brut en numérique « dot-decimal », ou '' si aucun nombre.
 
-    Gère le symbole €, l'espace insécable (\\xa0), l'espace séparateur de milliers
-    et la virgule décimale française :
+    Gère le symbole €, **tous** les espaces séparateurs de milliers (normal,
+    insécable \\xa0, fine \\u2009, fine insécable \\u202f) et la virgule décimale :
 
         « 1 752,90 € » → « 1752.90 »   « 602,57€ » → « 602.57 »   « Sur devis » → « »
 
     À utiliser par TOUS les scrapers pour un format de prix homogène — sinon un
-    ``float()`` à l'import casse (« 602,57 », « 12.30 € »), ou pire un ``.split()``
-    tronque « 1 752,90 » à « 1 ».
+    ``float()`` à l'import casse (« 602,57 », « 12.30 € »), ou pire un séparateur
+    de milliers tronque « 1 752,90 » à « 1 ».
     """
     if not isinstance(raw, str):
         return ""
-    m = _PRICE_RE.search(raw.replace("\xa0", " "))
+    m = _PRICE_RE.search(raw)
     if not m:
         return ""
-    return m.group(0).replace(" ", "").replace(",", ".")
+    return re.sub(r"\s", "", m.group(0)).replace(",", ".")
 
 
 def clean_dict(data: Dict[str, Any]) -> Dict[str, str]:

@@ -96,7 +96,9 @@ def _read_refs_and_price(page):
                 continue
 
         # Parse les références
-        m = re.search(r"Code P[ :][ :]{0,2}(\S+)", full_text)
+        # Séparateur après « Code P » = U+202F (espace fine insécable) sur le site
+        # → ``\s*`` (qui couvre  ), pas ``[ :]`` qui le ratait (réf vide).
+        m = re.search(r"Code P\s*[: ]?\s*(\S+)", full_text)
         if m:
             code_p = m.group(1)
         m = re.search(r"Réf\.\s*fabricant\s*[: ]\s*(\S+)", full_text)
@@ -278,9 +280,24 @@ def extract_product_from_dom(page):
     except Exception:
         log.warning("Sélecteur refs introuvable — produit ignoré")
         return None
+    # Le bloc existe avant d'être peuplé : son texte (Code P / Réf / EAN) arrive au
+    # 2ᵉ rendu React. On attend qu'il soit NON VIDE (sinon réf/Code P lus vides sur
+    # les fiches qui rendent un peu plus lentement) — NON bloquant : on lit ensuite
+    # ce qui est présent.
+    try:
+        page.wait_for_function(
+            "() => { const e = document.querySelector(\"div[data-testid='inline-list-item']\");"
+            " return !!e && e.innerText.trim().length > 0; }",
+            timeout=4000,
+        )
+    except Exception:
+        pass
 
     code_p_init, ref_fab_init, ref_prolians_init, price_init, stock_init, ean_init, eco_tax_init, reduction_init = _read_refs_and_price(page)
-    data["product_reference_fournisseur"] = ref_prolians_init
+    # Réf de repli : ~28 % des fiches n'exposent que le « Code P » (= token d'URL,
+    # unique), sans « Réf. PROLIANS » → on garantit une référence exploitable.
+    ref_init = ref_prolians_init or code_p_init
+    data["product_reference_fournisseur"] = ref_init
     data["product_ean"]                   = ean_init
     data["product_eco_taxe"]              = eco_tax_init
     data["product_promotion"]             = reduction_init
@@ -452,11 +469,11 @@ def extract_product_from_dom(page):
             data["products_is_combination"] = "True"
             # Parent = première ref dans l'ordre du document
             data["product_parent_reference"] = (
-                _all_prolians_refs[0] if _all_prolians_refs else ref_prolians_init
+                _all_prolians_refs[0] if _all_prolians_refs else ref_init
             )
             # child_refs = toutes les refs trouvées sur la page
             full_child_refs = (
-                "||".join(_all_prolians_refs) if _all_prolians_refs else ref_prolians_init
+                "||".join(_all_prolians_refs) if _all_prolians_refs else ref_init
             )
 
             if has_radio:
@@ -464,7 +481,9 @@ def extract_product_from_dom(page):
                 # Sur ces fiches la réf PROLIANS n'existe qu'APRÈS sélection d'une
                 # variante (init ne montre que « Code P ») → parent/child collectés
                 # avant clic sont vides : on les reconstruit depuis les variantes.
-                _decli_refs = [d["ref_prolians"] for d in declinaisons if d.get("ref_prolians")]
+                _decli_refs = [d["ref_prolians"] or d.get("code_p", "")
+                               for d in declinaisons
+                               if (d.get("ref_prolians") or d.get("code_p"))]
                 if _decli_refs:
                     if not data["product_parent_reference"]:
                         data["product_parent_reference"] = _decli_refs[0]
@@ -490,7 +509,9 @@ def extract_product_from_dom(page):
                 row = dict(data)
                 row["product_combination_index"]     = None
                 row["product_combination_values"]    = decli["label"]
-                row["product_reference_fournisseur"] = decli["ref_prolians"] or ref_prolians_init
+                row["product_reference_fournisseur"] = (
+                    decli["ref_prolians"] or decli.get("code_p") or ref_init
+                )
                 row["product_reference_fabricant"]   = decli["ref_fab"] or ref_fab_init
                 row["product_ean"]                   = decli["ean"] or ean_init
                 row["product_eco_taxe"]              = decli["eco_tax"] or eco_tax_init
@@ -504,8 +525,8 @@ def extract_product_from_dom(page):
             # Produit simple — parent = enfant = la même référence PROLIANS
             data["products_is_combination"]     = "False"
             data["product_reference_fabricant"] = ref_fab_init
-            data["product_parent_reference"]    = ref_prolians_init
-            data["product_child_reference"]     = ref_prolians_init
+            data["product_parent_reference"]    = ref_init
+            data["product_child_reference"]     = ref_init
             data["product_combination_index"]   = ""
             data["product_combination_values"]  = data.get("product_designation", "Produit standard")
             data["product_price_ht"]            = price_init
