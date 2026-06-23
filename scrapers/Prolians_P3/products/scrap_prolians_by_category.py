@@ -203,13 +203,15 @@ class ProlianByCategoryScraper:
     même pattern que ``ProlianProductScraper``.
     """
 
-    def __init__(self, category_name: str = "", limit: int | None = None) -> None:
+    def __init__(self, category_name: str = "", limit: int | None = None,
+                 headless: bool = False) -> None:
         name = (category_name or "").strip()
         # « Toutes les catégories » (entrée GUI) = crawl complet
         if name == Selectors.ALL_CATEGORIES_LABEL:
             name = ""
         self._category_name = name
         self._limit = limit
+        self._headless = headless  # run de fond non surveillé (sans fenêtre)
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -438,7 +440,7 @@ class ProlianByCategoryScraper:
             log.error(f"Base MariaDB Prolians non initialisée : {exc}")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=self._headless)
             context = browser.new_context()
             context.set_default_timeout(8000)
             context.set_default_navigation_timeout(20000)

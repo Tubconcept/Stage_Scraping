@@ -37,9 +37,10 @@ log = setup_logger("prolians.products")
 class ProlianBySitemapScraper(ProlianByCategoryScraper):
     """Scrape les fiches DOM de TOUT le catalogue, énuméré via les sitemaps XML."""
 
-    def __init__(self, limit: int | None = None) -> None:
+    def __init__(self, limit: int | None = None, headless: bool = True) -> None:
         # category_name="" → pas de confinement ; la vraie source est le sitemap.
-        super().__init__(category_name="", limit=limit)
+        # headless défaut True : run de fond non surveillé (catalogue = job long).
+        super().__init__(category_name="", limit=limit, headless=headless)
 
     def _get_product_urls(self, page) -> list[str]:
         # Le sitemap est public (HTTP simple) : pas besoin du navigateur ici.
@@ -48,9 +49,9 @@ class ProlianBySitemapScraper(ProlianByCategoryScraper):
         return urls
 
 
-def create_scraper() -> ProlianBySitemapScraper:
+def create_scraper(headless: bool = True) -> ProlianBySitemapScraper:
     """Fabrique attendue par la GUI."""
-    return ProlianBySitemapScraper()
+    return ProlianBySitemapScraper(headless=headless)
 
 
 def main() -> None:
@@ -58,8 +59,10 @@ def main() -> None:
         description="Scraper Prolians — catalogue complet via sitemap (fiches DOM).")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limiter le nombre de produits (test).")
+    parser.add_argument("--show", action="store_true",
+                        help="Afficher le navigateur (défaut : headless).")
     args = parser.parse_args()
-    ProlianBySitemapScraper(limit=args.limit)._sync_run()
+    ProlianBySitemapScraper(limit=args.limit, headless=not args.show)._sync_run()
 
 
 if __name__ == "__main__":

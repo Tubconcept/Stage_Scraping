@@ -331,7 +331,9 @@ class ScraperApp(tk.Tk):
         row = tk.Frame(self._action_frm, bg=BG)
         row.pack(pady=5)
         self._action_btns: dict[str, tk.Button] = {}
-        for label, key in [("Produits", "produits"), ("Catalogue léger", "catalogue_light"),
+        for label, key in [("Produits", "produits"),
+                            ("Catalogue complet", "catalogue_complet"),
+                            ("Catalogue léger", "catalogue_light"),
                             ("MAJ prix/stock", "maj_prixstock"),
                             ("Commandes", "commandes"),
                             ("Suivi Commandes", "suivi"), ("Suppression Adresses", "suppr"),
@@ -348,7 +350,7 @@ class ScraperApp(tk.Tk):
         # pack() déclenché dans _select_action
         self._panels: dict[str, tk.Frame] = {
             k: self._make_panel(k)
-            for k in ("produits", "catalogue_light", "maj_prixstock",
+            for k in ("produits", "catalogue_complet", "catalogue_light", "maj_prixstock",
                       "commandes", "suivi", "suppr", "refs")
         }
 
@@ -358,13 +360,14 @@ class ScraperApp(tk.Tk):
         ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(0, 8))
 
         _TITLES = {
-            "produits":        "Scraping Produits",
-            "catalogue_light": "Catalogue léger (GraphQL)",
-            "maj_prixstock":   "MAJ prix / stock (GraphQL)",
-            "commandes":       "Scraping Commandes",
-            "suivi":           "Suivi Commandes",
-            "suppr":           "Suppression d'adresses",
-            "refs":            "Mise à jour par références",
+            "produits":          "Scraping Produits",
+            "catalogue_complet": "Catalogue complet (sitemap → fiches DOM)",
+            "catalogue_light":   "Catalogue léger (GraphQL)",
+            "maj_prixstock":     "MAJ prix / stock (GraphQL)",
+            "commandes":         "Scraping Commandes",
+            "suivi":             "Suivi Commandes",
+            "suppr":             "Suppression d'adresses",
+            "refs":              "Mise à jour par références",
         }
         tk.Label(frm, text=_TITLES[key],
                  font=("Helvetica", 13, "bold"), bg=BG, fg=BLACK).pack()
@@ -393,6 +396,22 @@ class ScraperApp(tk.Tk):
                               "catégorie, conditionnement — sans description/images.",
                          font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
                          wraplength=620, justify="center").pack(pady=(4, 0))
+
+        elif key == "catalogue_complet":
+            tk.Label(frm.input_area,
+                     text="Catalogue ENTIER via le sitemap (~78 900 fiches DOM complètes). "
+                          "Job long (plusieurs jours) mais REPRISE intégrée : arrêt/relance "
+                          "reprend où il en était (saute les fiches déjà en base).",
+                     font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
+                     wraplength=620, justify="center").pack(pady=(2, 4))
+            frm.headless_var = tk.BooleanVar(value=True)
+            tk.Checkbutton(
+                frm.input_area,
+                text="Mode headless (sans fenêtre — run de fond non surveillé)",
+                variable=frm.headless_var,
+                font=("Helvetica", 10), bg=BG, fg=BLACK,
+                activebackground=BG, selectcolor=WHITE,
+            ).pack(pady=(2, 0))
 
         elif key == "maj_prixstock":
             tk.Label(frm.input_area,
@@ -513,7 +532,7 @@ class ScraperApp(tk.Tk):
     _SITE_AVAILABLE_ACTIONS: dict[str, set[str]] = {
         "Sonepar": {"produits", "refs", "commandes", "suivi", "suppr"},
         # Prolians : 2 modes GraphQL en plus (catalogue léger + MAJ prix/stock)
-        "Prolians": {"produits", "catalogue_light", "maj_prixstock",
+        "Prolians": {"produits", "catalogue_complet", "catalogue_light", "maj_prixstock",
                      "commandes", "suivi", "suppr", "refs"},
     }
     _ALL_ACTIONS: set[str] = {"produits", "commandes", "suivi", "suppr", "refs"}
@@ -680,9 +699,10 @@ class ScraperApp(tk.Tk):
         site_key = _SITE_KEYS.get(self._site, self._site.lower())
 
         _ACTION_INFO = {
-            "produits":        ("products",  CSV_HEADERS),
-            "catalogue_light": ("products",  CSV_HEADERS),
-            "maj_prixstock":   ("products",  CSV_HEADERS),
+            "produits":          ("products",  CSV_HEADERS),
+            "catalogue_complet": ("products",  CSV_HEADERS),
+            "catalogue_light":   ("products",  CSV_HEADERS),
+            "maj_prixstock":     ("products",  CSV_HEADERS),
             "commandes":       ("orders",    ORDERS_CSV_HEADERS),
             "suivi":           ("tracking",  TRACKING_CSV_HEADERS),
         }
@@ -951,6 +971,12 @@ class ScraperApp(tk.Tk):
             scraper = mod.create_scraper(category_name=cat)
             self._start_async(key, scraper.run(), scraper,
                               lambda: self._latest_csv("scrap_p3_products_*.csv"))
+
+        elif key == "catalogue_complet":
+            mod      = import_module(cfg["imports"]["catalogue_complet"])
+            headless = bool(getattr(panel, "headless_var", None) and panel.headless_var.get())
+            scraper  = mod.create_scraper(headless=headless)
+            self._start_async(key, scraper.run(), scraper, lambda: "")
 
         elif key == "catalogue_light":
             cat     = panel.cat_var.get() if cfg.get("has_categories") else ""

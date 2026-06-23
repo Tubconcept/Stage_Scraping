@@ -45,12 +45,13 @@ SITES_CONFIG = {
         "has_categories": True,
         "categories": _ProliansSelectors.CATEGORY_NAMES,
         "imports": {
-            "produits":        "scrapers.Prolians_P3.products.scrap_prolians_by_category",
-            "catalogue_light": "scrapers.Prolians_P3.products.scrap_prolians_light",
-            "maj_prixstock":   "scrapers.Prolians_P3.products.scrap_prolians_price_stock",
-            "commandes":       "scrapers.Prolians_P3.orders.scrap_prolians_orders",
-            "suivi":           "scrapers.Prolians_P3.tracking.scrap_prolians_tracking",
-            "suppr":           "scrapers.Prolians_P3.deleting.scrap_suppradrr",
+            "produits":          "scrapers.Prolians_P3.products.scrap_prolians_by_category",
+            "catalogue_complet": "scrapers.Prolians_P3.products.scrap_prolians_by_sitemap",
+            "catalogue_light":   "scrapers.Prolians_P3.products.scrap_prolians_light",
+            "maj_prixstock":     "scrapers.Prolians_P3.products.scrap_prolians_price_stock",
+            "commandes":         "scrapers.Prolians_P3.orders.scrap_prolians_orders",
+            "suivi":             "scrapers.Prolians_P3.tracking.scrap_prolians_tracking",
+            "suppr":             "scrapers.Prolians_P3.deleting.scrap_suppradrr",
         }
     },
     # ─── Legallais (fournisseur P1) — www.legallais.com ────────────────────
