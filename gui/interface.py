@@ -410,10 +410,10 @@ class ScraperApp(tk.Tk):
 
         elif key == "catalogue_light_full":
             tk.Label(frm.input_area,
-                     text="Catalogue ENTIER via le sitemap + API GraphQL (~78 900 réfs) : "
-                          "réf, nom, marque, prix, stock, catégorie — en quelques MINUTES, "
-                          "sans charger les fiches. Pour desc/images/EAN/déclinaisons, "
-                          "lancer ensuite « Catalogue complet ».",
+                     text="Catalogue ENTIER via le sitemap + API du site : réf, nom, marque, "
+                          "prix, stock, catégorie — en quelques MINUTES, sans charger les "
+                          "fiches DOM. Pour les fiches riches (desc/images/déclinaisons), "
+                          "lancer ensuite le mode DOM (« Catalogue complet » / « Produits »).",
                      font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
                      wraplength=620, justify="center").pack(pady=(2, 4))
 
@@ -539,6 +539,7 @@ class ScraperApp(tk.Tk):
         "Prolians": {"produits", "catalogue_complet", "catalogue_light_full",
                      "maj_prixstock",
                      "commandes", "suivi", "suppr", "refs"},
+        "Sider": {"produits", "catalogue_light_full"},
     }
     _ALL_ACTIONS: set[str] = {"produits", "commandes", "suivi", "suppr", "refs"}
 
@@ -1021,6 +1022,10 @@ class ScraperApp(tk.Tk):
             cat     = panel.cat_var.get()
             mod     = import_module(cfg["imports"]["produits"])
             scraper = mod.create_scraper(category_name=cat)
+            self._start_async(key, scraper.run(), scraper, lambda: "")
+        elif key == "catalogue_light_full":
+            mod     = import_module(cfg["imports"]["catalogue_light_full"])
+            scraper = mod.create_scraper()
             self._start_async(key, scraper.run(), scraper, lambda: "")
         else:
             messagebox.showinfo(

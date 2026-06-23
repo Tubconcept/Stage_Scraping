@@ -82,7 +82,8 @@ SITES_CONFIG = {
         "has_categories": True,
         "categories": _SiderSelectors.CATEGORY_NAMES,
         "imports": {
-            "produits": "scrapers.Sider_P6.products.scrap_sider_products",
+            "produits":             "scrapers.Sider_P6.products.scrap_sider_products",
+            "catalogue_light_full": "scrapers.Sider_P6.products.scrap_sider_light_sitemap",
         }
     },
 }
