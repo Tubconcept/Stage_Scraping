@@ -348,6 +348,20 @@ class ProlianByCategoryScraper:
         """BFS → références produit (SKU), dédupliquées. Pour le mode GraphQL."""
         return self._crawl_categories(page, seeds, confine, _collect_product_refs, label="réf")
 
+    def _get_product_urls(self, page) -> list[str]:
+        """Source des URLs produit à scraper. Par défaut : parcours de l'arbre
+        catégories (confiné à une branche ou catalogue complet). Surchargée par
+        ``ProlianBySitemapScraper`` pour énumérer le catalogue COMPLET via les
+        sitemaps XML (exhaustif, là où le crawl catégories laisse des trous)."""
+        seeds, confine = self._seed_categories(page)
+        if not seeds:
+            return []
+        if confine:
+            log.info("Périmètre : « %s » — confiné à %s", self._category_name, confine)
+        else:
+            log.warning("Périmètre : CATALOGUE COMPLET — %d catégorie(s) principale(s)", len(seeds))
+        return self._crawl_product_urls(page, seeds, confine)
+
     # ─── Extraction + persistance d'un produit (logique alignée sur le mode sitemap) ─
 
     def _scrape_product(self, page, context, db_conn, url: str, count: int) -> bool:
@@ -437,20 +451,13 @@ class ProlianByCategoryScraper:
                     db_conn.close()
                 return
 
-            seeds, confine = self._seed_categories(page)
-            if not seeds:
-                log.error("Aucune catégorie de départ — arrêt.")
+            product_urls = self._get_product_urls(page)
+            if not product_urls:
+                log.error("Aucune URL produit à scraper — arrêt.")
                 browser.close()
                 if db_conn:
                     db_conn.close()
                 return
-
-            if confine:
-                log.info("Périmètre : « %s » — confiné à %s", self._category_name, confine)
-            else:
-                log.warning("Périmètre : CATALOGUE COMPLET — %d catégorie(s) principale(s)", len(seeds))
-
-            product_urls = self._crawl_product_urls(page, seeds, confine)
             if self._limit:
                 product_urls = product_urls[: self._limit]
 
