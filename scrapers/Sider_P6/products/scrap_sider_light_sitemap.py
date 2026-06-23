@@ -29,7 +29,6 @@ if str(PROJECT_ROOT) not in sys.path:
 import argparse
 import asyncio
 import json
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from bs4 import BeautifulSoup
@@ -37,16 +36,20 @@ from dotenv import load_dotenv
 
 from core.config import PROFILES_DIR
 from core.logger import setup_logger
+from core.polite_http import build_browser_headers, polite_get
 from core.utils import normalize_price
 from db.mariadb_db import init_site_db, insert_product, update_product_fields
-from scrapers.Sider_P6.products.sider_sitemap import collect_product_urls, _UA
+from scrapers.Sider_P6.products.sider_sitemap import collect_product_urls
 from scrapers.Sider_P6.products.scrap_sider_products import SiderProductScraper
 
 load_dotenv(PROJECT_ROOT / ".env")
 log = setup_logger("sider.products")
 
 _TIMEOUT = 30
-_MAX_WORKERS = 10
+# Concurrence BORNÉE + délai jittered (dans polite_get) = anti-détection : pas de
+# rafale. Le débit effectif ≈ _MAX_WORKERS / délai_moyen (~6/0,6 ≈ 10 req/s).
+_MAX_WORKERS = 6
+_REFERER = "https://www.sider.biz/"
 
 
 class SiderLightSitemapScraper:
@@ -60,34 +63,41 @@ class SiderLightSitemapScraper:
         self._stop_requested = True
 
     async def run(self) -> None:
-        cookie = await self._get_cookies()
+        cookie, ua = await self._get_cookies()
         if not cookie:
             log.error("Session Sider indisponible — arrêt.")
             return
-        await asyncio.to_thread(self._sync_fetch, cookie)
+        await asyncio.to_thread(self._sync_fetch, cookie, ua)
 
-    # ─── Session (1 login Playwright → cookies) ───────────────────────────────
+    # ─── Session (1 login Playwright → cookies + UA) ──────────────────────────
 
-    async def _get_cookies(self) -> str:
-        """Connexion via ``SiderProductScraper`` puis extraction de l'en-tête Cookie."""
+    async def _get_cookies(self) -> tuple[str, str]:
+        """Connexion via ``SiderProductScraper`` → (en-tête Cookie, User-Agent de session).
+
+        On récupère AUSSI l'``User-Agent`` du navigateur de login pour que les GET
+        HTTP suivants soient cohérents avec les cookies (anti-détection).
+        """
         sc = SiderProductScraper()
         storage_path = PROFILES_DIR / "sider" / "session.json"
         storage = str(storage_path) if storage_path.exists() else None
         raw: list[dict] = []
+        ua = ""
         try:
             await sc.start_browser(headless=True, storage_state=storage)
             page = await sc.new_page()
             await sc._ensure_session(page, storage_path)
             raw = await sc._context.cookies()
+            ua = await page.evaluate("() => navigator.userAgent")
         except Exception as exc:
             log.error("Connexion Sider échouée : %s", exc)
-            return ""
+            return "", ""
         finally:
             try:
                 await sc.close()
             except Exception:
                 pass
-        return "; ".join(f"{c['name']}={c['value']}" for c in raw if "sider" in (c.get("domain") or ""))
+        cookie = "; ".join(f"{c['name']}={c['value']}" for c in raw if "sider" in (c.get("domain") or ""))
+        return cookie, ua
 
     # ─── Parsing fiche ────────────────────────────────────────────────────────
 
@@ -133,11 +143,10 @@ class SiderLightSitemapScraper:
         }
 
     def _fetch_one(self, url: str, headers: dict) -> dict | None:
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-                html = resp.read().decode("utf-8", "replace")
-        except Exception:
+        # polite_get : délai jittered + retry/back-off sur rate-limit (anti-détection)
+        html = polite_get(url, headers, timeout=_TIMEOUT,
+                          should_stop=lambda: self._stop_requested)
+        if not html:
             return None
         return self._parse(html, url)
 
@@ -154,7 +163,7 @@ class SiderLightSitemapScraper:
 
     # ─── Boucle HTTP concurrente ──────────────────────────────────────────────
 
-    def _sync_fetch(self, cookie: str) -> None:
+    def _sync_fetch(self, cookie: str, ua: str) -> None:
         try:
             init_site_db("sider")
         except Exception as exc:
@@ -164,9 +173,9 @@ class SiderLightSitemapScraper:
         if not urls:
             log.warning("Aucune URL produit (sitemap) — arrêt.")
             return
-        log.info("Sider : %d produit(s) à enrichir (HTTP authentifié, %d workers)",
+        log.info("Sider : %d produit(s) à enrichir (HTTP poli, %d workers)",
                  len(urls), _MAX_WORKERS)
-        headers = {"User-Agent": _UA, "Cookie": cookie}
+        headers = build_browser_headers(ua=ua, cookie=cookie, referer=_REFERER)
         ok = miss = 0
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
             futs = {ex.submit(self._fetch_one, u, headers): u for u in urls}

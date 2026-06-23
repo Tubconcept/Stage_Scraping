@@ -24,33 +24,51 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import gzip
 import io
+import random
 import re
+import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 
 from core.logger import setup_logger
+from core.polite_http import build_browser_headers
 
 log = setup_logger("sider.products")
 
 SITEMAP_URL = "https://www.sider.biz/plan-du-site"
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+_REFERER = "https://www.sider.biz/"
 _SKU_RE = re.compile(r"\.(\d+)$")
 
 
-def _http_get(url: str, timeout: int = 90) -> bytes:
-    req = urllib.request.Request(
-        url, headers={"User-Agent": _UA, "Accept-Encoding": "gzip"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
-        if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
-            data = gzip.decompress(data)
-    if data[:2] == b"\x1f\x8b":
-        data = gzip.decompress(data)
-    return data
+def _http_get(url: str, timeout: int = 90, retries: int = 3) -> bytes:
+    """GET du sitemap avec en-têtes navigateur réalistes + retry/back-off sur 429/403/503.
+
+    (Le sitemap est servi par un CDN qui 403 les requêtes au pattern « bot » :
+    UA minimal, pas d'Accept-Language, rafales.)
+    """
+    headers = build_browser_headers(referer=_REFERER)
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+                enc = (resp.headers.get("Content-Encoding") or "").lower()
+            if enc == "gzip" or data[:2] == b"\x1f\x8b":
+                data = gzip.decompress(data)
+            return data
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 403, 503) and attempt < retries:
+                time.sleep(2.0 ** attempt + random.uniform(0.0, 1.5))
+                continue
+            raise
+        except Exception:
+            if attempt < retries:
+                time.sleep(1.5 ** attempt + random.uniform(0.0, 0.5))
+                continue
+            raise
+    raise RuntimeError("unreachable")
 
 
 def _local(tag: str) -> str:
