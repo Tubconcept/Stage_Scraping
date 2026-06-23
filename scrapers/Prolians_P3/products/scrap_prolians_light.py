@@ -71,6 +71,19 @@ class ProlianLightScraper:
     async def run(self) -> None:
         await asyncio.to_thread(self._sync_run)
 
+    def _get_refs(self, page) -> list[str]:
+        """Source des références à enrichir via GraphQL. Par défaut : parcours de
+        l'arbre catégories (confiné ou complet). Surchargée par le mode sitemap
+        (``ProlianLightSitemapScraper``) pour énumérer le catalogue COMPLET."""
+        seeds, confine = self._crawler._seed_categories(page)
+        if not seeds:
+            return []
+        if confine:
+            log.info("Périmètre : « %s » — confiné à %s", self._category_name, confine)
+        else:
+            log.warning("Périmètre : CATALOGUE COMPLET — %d catégorie(s) principale(s)", len(seeds))
+        return self._crawler._crawl_product_refs(page, seeds, confine)
+
     def _persist(self, row: dict) -> str:
         """UPDATE si la réf existe (préserve les champs riches), sinon INSERT.
 
@@ -111,18 +124,8 @@ class ProlianLightScraper:
                 browser.close()
                 return
 
-            # 1) Réfs via parcours catégorie (confiné ou complet)
-            seeds, confine = self._crawler._seed_categories(page)
-            if not seeds:
-                log.error("Aucune catégorie de départ — arrêt.")
-                browser.close()
-                return
-            if confine:
-                log.info("Périmètre : « %s » — confiné à %s", self._category_name, confine)
-            else:
-                log.warning("Périmètre : CATALOGUE COMPLET — %d catégorie(s) principale(s)", len(seeds))
-
-            refs = self._crawler._crawl_product_refs(page, seeds, confine)
+            # 1) Source des références (catégories par défaut ; sitemap en surcharge)
+            refs = self._get_refs(page)
             if self._limit:
                 refs = refs[: self._limit]
             if not refs:
