@@ -366,17 +366,24 @@ def get_product_references(_conn, site: str) -> list[str]:
         conn_db.close()
 
 
-def update_product_fields(_conn, site: str, ref: str, fields: dict) -> bool:
-    """UPDATE ciblé de quelques colonnes pour une référence donnée.
+def update_product_fields(_conn, site: str, ref: str, fields: dict,
+                          match_col: str = "product_reference_fournisseur") -> bool:
+    """UPDATE ciblé de quelques colonnes pour une ligne identifiée par ``match_col``.
 
     Ne touche QUE les colonnes de ``fields`` (les autres — description, images,
-    etc. — sont préservées). Retourne True si au moins une ligne a été modifiée.
+    etc. — sont préservées). Retourne True si au moins une ligne correspond.
 
-    Sécurité : seules les colonnes appartenant à ``CSV_HEADERS`` sont acceptées.
+    match_col : colonne d'identification (défaut = référence fournisseur). Le mode
+        « léger » Sider matche par ``product_fournisseur_url`` : une réf peut être
+        partagée par plusieurs fiches, ce qui collisionne avec l'index UNIQUE sur
+        l'URL si l'on met à jour par réf.
+
+    Sécurité : ``match_col`` et les colonnes de ``fields`` doivent appartenir à
+    ``CSV_HEADERS``.
     """
     ref = str(ref or "").strip()
     cols = [c for c in fields if c in CSV_HEADERS]
-    if not ref or not cols:
+    if not ref or not cols or match_col not in CSV_HEADERS:
         return False
     table = _table(site, "products")
     set_clause = ", ".join(f"`{c}`=%s" for c in cols)
@@ -385,8 +392,7 @@ def update_product_fields(_conn, site: str, ref: str, fields: dict) -> bool:
     try:
         with conn_db.cursor() as cur:
             cur.execute(
-                f"UPDATE `{table}` SET {set_clause} "
-                f"WHERE `product_reference_fournisseur` = %s",
+                f"UPDATE `{table}` SET {set_clause} WHERE `{match_col}` = %s",
                 values + [ref],
             )
             # rowcount = lignes MODIFIÉES ; 0 peut signifier « inexistant » OU
@@ -394,8 +400,7 @@ def update_product_fields(_conn, site: str, ref: str, fields: dict) -> bool:
             matched = cur.rowcount > 0
             if not matched:
                 cur.execute(
-                    f"SELECT 1 FROM `{table}` "
-                    f"WHERE `product_reference_fournisseur` = %s LIMIT 1",
+                    f"SELECT 1 FROM `{table}` WHERE `{match_col}` = %s LIMIT 1",
                     (ref,),
                 )
                 matched = cur.fetchone() is not None
@@ -403,7 +408,7 @@ def update_product_fields(_conn, site: str, ref: str, fields: dict) -> bool:
         return matched
     except pymysql.Error as e:
         conn_db.rollback()
-        _log.exception("update_product_fields(%s) échec : %s | ref=%s", site, e, ref)
+        _log.exception("update_product_fields(%s) échec : %s | %s=%s", site, e, match_col, ref)
         return False
     finally:
         conn_db.close()

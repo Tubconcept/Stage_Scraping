@@ -421,16 +421,16 @@ class ScraperApp(tk.Tk):
             trow = tk.Frame(frm.input_area, bg=BG)
             tk.Label(trow, text="Workers :", font=("Helvetica", 9),
                      bg=BG, fg=BLACK).pack(side="left")
-            frm.workers_var = tk.IntVar(value=6)
+            frm.workers_var = tk.IntVar(value=3)
             tk.Spinbox(trow, from_=1, to=12, width=4, textvariable=frm.workers_var,
                        font=("Helvetica", 9)).pack(side="left", padx=(2, 12))
             tk.Label(trow, text="Délai/req. (s)  min", font=("Helvetica", 9),
                      bg=BG, fg=BLACK).pack(side="left")
-            frm.delay_min_var = tk.DoubleVar(value=0.3)
+            frm.delay_min_var = tk.DoubleVar(value=1.0)
             tk.Spinbox(trow, from_=0.0, to=5.0, increment=0.1, width=4, format="%.1f",
                        textvariable=frm.delay_min_var, font=("Helvetica", 9)).pack(side="left", padx=2)
             tk.Label(trow, text="max", font=("Helvetica", 9), bg=BG, fg=BLACK).pack(side="left")
-            frm.delay_max_var = tk.DoubleVar(value=0.9)
+            frm.delay_max_var = tk.DoubleVar(value=3.0)
             tk.Spinbox(trow, from_=0.0, to=5.0, increment=0.1, width=4, format="%.1f",
                        textvariable=frm.delay_max_var, font=("Helvetica", 9)).pack(side="left", padx=2)
             frm.throttle_row = trow
@@ -1056,7 +1056,7 @@ class ScraperApp(tk.Tk):
                 if dmax < dmin:
                     dmin, dmax = dmax, dmin
             except Exception:
-                workers, dmin, dmax = 6, 0.3, 0.9
+                workers, dmin, dmax = 3, 1.0, 3.0
             scraper = mod.create_scraper(max_workers=workers, delay=(dmin, dmax))
             self._start_async(key, scraper.run(), scraper, lambda: "")
         else:
