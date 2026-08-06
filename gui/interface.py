@@ -332,6 +332,7 @@ class ScraperApp(tk.Tk):
         row.pack(pady=5)
         self._action_btns: dict[str, tk.Button] = {}
         for label, key in [("Produits", "produits"),
+                            ("Méthodes", "methode"),
                             ("Catalogue complet", "catalogue_complet"),
                             ("Léger complet", "catalogue_light_full"),
                             ("MAJ prix/stock", "maj_prixstock"),
@@ -350,7 +351,7 @@ class ScraperApp(tk.Tk):
         # pack() déclenché dans _select_action
         self._panels: dict[str, tk.Frame] = {
             k: self._make_panel(k)
-            for k in ("produits", "catalogue_complet", "catalogue_light_full",
+            for k in ("produits", "methode", "catalogue_complet", "catalogue_light_full",
                       "maj_prixstock",
                       "commandes", "suivi", "suppr", "refs")
         }
@@ -362,6 +363,7 @@ class ScraperApp(tk.Tk):
 
         _TITLES = {
             "produits":             "Scraping Produits",
+            "methode":              "Méthodes rapides (sitemap / API)",
             "catalogue_complet":    "Catalogue complet (sitemap → fiches DOM)",
             "catalogue_light_full": "Léger complet (sitemap → GraphQL)",
             "maj_prixstock":     "MAJ prix / stock (GraphQL)",
@@ -391,6 +393,41 @@ class ScraperApp(tk.Tk):
                                           font=("Helvetica", 10))
             frm.cat_combo.pack(side="left", padx=8)
             frm.cat_row = row
+
+        elif key == "methode":
+            tk.Label(frm.input_area,
+                     text="Voies rapides portées de SCRAPPER_App : énumération par sitemap ou "
+                          "API interne, écriture directe en base sans doublon. Chaque fiche est "
+                          "traitée comme un article simple (pas de déclinaisons parent/enfant).",
+                     font=("Helvetica", 9, "italic"), bg=BG, fg=GRAY,
+                     wraplength=620, justify="center").pack(pady=(2, 6))
+
+            mrow = tk.Frame(frm.input_area, bg=BG)
+            mrow.pack(pady=2)
+            tk.Label(mrow, text="Méthode :", font=("Helvetica", 10),
+                     bg=BG, fg=BLACK).pack(side="left")
+            frm.methode_var = tk.StringVar()
+            frm.methode_combo = ttk.Combobox(mrow, textvariable=frm.methode_var,
+                                             state="readonly", width=52,
+                                             font=("Helvetica", 10))
+            frm.methode_combo.pack(side="left", padx=8)
+            #: {libellé affiché: nom technique} — la combo montre le libellé.
+            frm.methode_noms = {}
+
+            lrow = tk.Frame(frm.input_area, bg=BG)
+            lrow.pack(pady=(6, 0))
+            frm.limit_var = tk.BooleanVar(value=False)
+            tk.Checkbutton(
+                lrow, text="Limiter à", variable=frm.limit_var,
+                font=("Helvetica", 10), bg=BG, fg=BLACK,
+                activebackground=BG, selectcolor=WHITE,
+                command=lambda: self._toggle_limit_spin(key),
+            ).pack(side="left")
+            frm.limit_spin = tk.Spinbox(lrow, from_=1, to=200000, width=8,
+                                        font=("Helvetica", 10), state="disabled")
+            frm.limit_spin.pack(side="left", padx=6)
+            tk.Label(lrow, text="fiches (test)", font=("Helvetica", 10),
+                     bg=BG, fg=BLACK).pack(side="left")
 
         elif key == "catalogue_complet":
             tk.Label(frm.input_area,
@@ -605,6 +642,9 @@ class ScraperApp(tk.Tk):
             else:
                 panel.cat_row.pack_forget()
 
+        if key == "methode":
+            self._peupler_methodes(panel)
+
         # Réglages anti-détection : seulement pour les modes « Léger complet » HTTP (Sider)
         if key == "catalogue_light_full" and getattr(panel, "throttle_row", None) is not None:
             if self._site == "Sider":
@@ -627,6 +667,32 @@ class ScraperApp(tk.Tk):
     def _toggle_days_spin(self, key: str):
         panel = self._panels[key]
         panel.days_spin.config(state="normal" if panel.limit_days_var.get() else "disabled")
+
+    def _toggle_limit_spin(self, key: str):
+        panel = self._panels[key]
+        panel.limit_spin.config(state="normal" if panel.limit_var.get() else "disabled")
+
+    def _peupler_methodes(self, panel) -> None:
+        """Remplit le sélecteur avec les méthodes disponibles pour le site choisi.
+
+        Le libellé est affiché, le nom technique conservé à part : la combo doit
+        rester lisible (« Sitemap + JSON inline — catalogue complet ») sans que le
+        lanceur ait à le ré-analyser.
+        """
+        from core.methodes import libelle, methodes_disponibles
+
+        site = self._SITE_KEYS.get(self._site, "")
+        noms = methodes_disponibles("produits", site) if site else []
+        panel.methode_noms = {libelle("produits", site, n): n for n in noms}
+        libelles = list(panel.methode_noms)
+        panel.methode_combo["values"] = libelles
+        if libelles:
+            panel.methode_combo.config(state="readonly")
+            if panel.methode_var.get() not in libelles:
+                panel.methode_combo.current(0)
+        else:
+            panel.methode_var.set("")
+            panel.methode_combo.config(state="disabled")
 
     @staticmethod
     def _validate_days_input(value: str) -> bool:
@@ -668,7 +734,9 @@ class ScraperApp(tk.Tk):
             messagebox.showerror("Erreur", "Veuillez d'abord choisir un site.")
             return
         try:
-            if self._site == "Setin":
+            if key == "methode":
+                self._launch_methode()
+            elif self._site == "Setin":
                 self._launch_setin(key)
             elif self._site == "Legallais":
                 self._launch_legallais(key)
@@ -731,6 +799,7 @@ class ScraperApp(tk.Tk):
 
         _ACTION_INFO = {
             "produits":             ("products",  CSV_HEADERS),
+            "methode":              ("products",  CSV_HEADERS),
             "catalogue_complet":    ("products",  CSV_HEADERS),
             "catalogue_light_full": ("products",  CSV_HEADERS),
             "maj_prixstock":        ("products",  CSV_HEADERS),
@@ -816,8 +885,8 @@ class ScraperApp(tk.Tk):
         "Legallais": "legallais",
         "Prolians":  "prolians",
         "Sonepar":   "sonepar",
+        "Sider":     "sider",
     }
-    _SITE_KEYS = {"Setin": "setin", "Legallais": "legallais", "Prolians": "prolians", "Sider": "sider"}
 
     _REFS_MODULES = {
         "setin":     "scrapers.Setin_P5.products.scrap_setin_by_refs",
@@ -828,6 +897,60 @@ class ScraperApp(tk.Tk):
 
     # Sites dont le scraper par-refs est synchrone (Botasaurus)
     _SYNC_REFS_SITES = {"legallais"}
+
+    # ─── Lanceur « Méthodes » ─────────────────────────────────────────────────
+
+    def _launch_methode(self) -> None:
+        """Lance la méthode sélectionnée dans un thread de travail.
+
+        Le scraper déroule sa propre boucle asyncio (``core.methodes.lancer``) :
+        on passe donc par ``_start_sync``, pas par ``_start_async`` qui créerait
+        une seconde boucle autour.
+        """
+        panel = self._panels["methode"]
+        site = self._SITE_KEYS.get(self._site, "")
+        nom = panel.methode_noms.get(panel.methode_var.get())
+        if not nom:
+            messagebox.showerror(
+                "Aucune méthode",
+                f"Aucune méthode rapide n'est disponible pour {self._site}.\n"
+                "Utiliser « Produits » ou « Catalogue complet ».",
+            )
+            return
+
+        parametres: dict = {}
+        if panel.limit_var.get():
+            try:
+                parametres["limit"] = int(panel.limit_spin.get())
+            except (TypeError, ValueError):
+                raise ValueError("La limite doit être un nombre entier de fiches.") from None
+
+        def _progres(charge: dict) -> None:
+            message = str(charge.get("message") or "")
+            if message:
+                # Traversée de thread : toute écriture Tkinter passe par after().
+                self.after(0, lambda: self._set_running_message("methode", message))
+
+        def _travail() -> None:
+            from core.methodes import lancer
+
+            bilan = lancer(
+                site, "produits", nom, parametres,
+                emettre_progres=_progres,
+                doit_annuler=lambda: not self._running,
+            )
+            logger.info("Méthode %s/%s terminée : %s", site, nom, bilan)
+            resume = (
+                f"{bilan.get('produits', 0)} fiches — {bilan.get('nouveaux', 0)} nouvelles, "
+                f"{bilan.get('enrichis', 0)} enrichies"
+            )
+            self.after(0, lambda: self._set_done("methode", f"Terminé ✔ — {resume}"))
+
+        self._start_sync("methode", _travail, lambda: "")
+
+    def _set_running_message(self, key: str, message: str) -> None:
+        """Affiche une ligne de progression sans changer l'état du voyant."""
+        self._panels[key].lbl_status.config(text=message, fg=GREEN_TXT)
 
     # ─── Lanceurs Sonepar ─────────────────────────────────────────────────────
 
@@ -1112,6 +1235,35 @@ class ScraperApp(tk.Tk):
 
     # ─── Helpers threading ────────────────────────────────────────────────────
 
+    #: Actions qui écrivent dans la table produits — les seules à dédoublonner.
+    _CLES_PRODUITS: frozenset[str] = frozenset({
+        "produits", "methode", "catalogue_complet", "catalogue_light_full",
+        "maj_prixstock", "refs",
+    })
+
+    def _dedupliquer(self, key: str) -> None:
+        """Dédoublonne la table produits du site à la fin d'un scrape.
+
+        Exécuté dans le thread de travail, avant de rendre la main à Tkinter :
+        l'interface ne doit pas se figer pendant le balayage. Silencieux en
+        cas d'échec — un scrape réussi ne doit pas être signalé en erreur
+        parce que la passe de dédoublonnage a trébuché.
+        """
+        if key not in self._CLES_PRODUITS:
+            return
+        site_key = self._SITE_KEYS.get(self._site, "")
+        if not site_key:
+            return
+        try:
+            self.after(0, lambda: self._set_done(key, "Dédoublonnage..."))
+        except Exception:
+            pass
+        try:
+            from db.mariadb_db import dedupliquer_apres_scrape
+            dedupliquer_apres_scrape(site_key)
+        except Exception:
+            pass
+
     def _read_dates(self, panel) -> tuple[datetime, datetime]:
         df_str = panel.entry_from.get().strip()
         dt_str = panel.entry_to.get().strip()
@@ -1154,6 +1306,7 @@ class ScraperApp(tk.Tk):
                     loop.close()
                 except Exception:
                     pass
+                self._dedupliquer(key)
                 try:
                     was_running = self._running
                     self._running = False
@@ -1183,6 +1336,7 @@ class ScraperApp(tk.Tk):
             except Exception:
                 pass
             finally:
+                self._dedupliquer(key)
                 try:
                     was_running = self._running
                     self._running = False

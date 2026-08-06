@@ -29,6 +29,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 # ── Stubs des modules lourds (avant tout import du projet) ─────────────────────
 
+#: Clés réellement insérées par ce module — pour les retirer après l'import.
+_STUBS_POSES: list[str] = []
+
+
 def _stub(dotted: str) -> None:
     """Insère un ModuleType vide dans sys.modules pour chaque préfixe du chemin."""
     parts = dotted.split(".")
@@ -36,6 +40,7 @@ def _stub(dotted: str) -> None:
         key = ".".join(parts[:i])
         if key not in sys.modules:
             sys.modules[key] = types.ModuleType(key)
+            _STUBS_POSES.append(key)
 
 
 _STUBS = [
@@ -58,6 +63,7 @@ _sc = sys.modules.get("gui.site_config")
 if _sc is None:
     _sc = types.ModuleType("gui.site_config")
     sys.modules["gui.site_config"] = _sc
+    _STUBS_POSES.append("gui.site_config")
 _sc.SITES_CONFIG = {}
 
 if "core.config" not in sys.modules:
@@ -66,8 +72,10 @@ if "core.config" not in sys.modules:
     _cc.ORDERS_CSV_HEADERS = []
     _cc.TRACKING_CSV_HEADERS = []
     sys.modules["core.config"] = _cc
+    _STUBS_POSES.append("core.config")
     if "core" not in sys.modules:
         sys.modules["core"] = types.ModuleType("core")
+        _STUBS_POSES.append("core")
 
 # ── Import des helpers une fois les stubs en place ─────────────────────────────
 from gui.interface import (  # noqa: E402
@@ -77,6 +85,19 @@ from gui.interface import (  # noqa: E402
     _save_prolians_order,
     ScraperApp,
 )
+
+# ── Retrait des stubs : ils ne devaient vivre que le temps de l'import ─────────
+# ⚠️ Sans ce nettoyage, les faux modules survivent à ce fichier et **cassent les
+# autres suites** : ``scrapers.Legallais_P1`` reste un ModuleType nu, et tout
+# import ultérieur de ``scrapers.Legallais_P1.products.…`` échoue sur
+# « n'est pas un package ». C'est ce qui rendait ``pytest tests/`` incollectable.
+# On ne retire que ce qu'on a soi-même posé : un module réellement importé
+# entre-temps (par un autre fichier de test) doit rester en place.
+for _cle in reversed(_STUBS_POSES):
+    if isinstance(sys.modules.get(_cle), types.ModuleType) and not hasattr(
+        sys.modules[_cle], "__file__"
+    ):
+        del sys.modules[_cle]
 
 # ── Constante de module réutilisée dans les tests ──────────────────────────────
 DATE_FORMAT = "%d/%m/%Y"

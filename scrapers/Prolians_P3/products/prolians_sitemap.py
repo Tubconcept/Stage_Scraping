@@ -240,6 +240,23 @@ def collect_product_urls(leaves: list[str] | None = None, logger=None,
     return out
 
 
+def ref_depuis_url(url: str) -> str:
+    """Référence GraphQL = **token de fin d'URL**, en MAJUSCULES. **Pur**.
+
+    ``…-10013933`` → ``10013933`` (réf numérique) ; ``…-03hswte`` → ``03HSWTE``
+    (réf **encodée**). Les deux formes sont acceptées par ``productsByReferences``
+    et renvoyées telles quelles (majuscules) dans le champ ``reference`` de la
+    réponse → l'enrichissement, indexé par cette même valeur, matche.
+
+    ⚠️ Ne PAS restreindre au numérique (``-\\d{6,}$``, cf. ``_NUMERIC_TOKEN`` plus
+    bas, réservé aux statistiques) : toute la part du catalogue à token encodé
+    sortirait alors sans prix, sans stock, sans marque et sans référence
+    fournisseur.
+    """
+    token = (url or "").rstrip("/").rsplit("-", 1)[-1]
+    return token.upper() if token else ""
+
+
 # =============================================================================
 # Audit : sitemap vs contenu de la base
 # =============================================================================
