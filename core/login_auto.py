@@ -64,6 +64,10 @@ class ConfigLoginAuto:
     #: Login en 2 étapes (Prolians) : le mot de passe n'apparaît qu'après validation
     #: de l'email.
     email_puis_valider: bool = False
+    #: Bouton de la **2ᵉ** étape quand il diffère du premier. ``None`` = même bouton.
+    #: Prolians a deux libellés distincts (« Connexion / Inscription » puis
+    #: « Se connecter ») : un sélecteur unique ne peut pas couvrir les deux.
+    submit_etape2: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,17 +93,27 @@ CONFIG_LOGIN: dict[str, ConfigLogin] = {
         selecteur_connecte="button[aria-label='Mon compte']",
         auto=ConfigLoginAuto(
             champ_email="input[name='email']",
-            champ_password="input[type='password']",
-            # ⚠️ PAS button[type='submit'] : ce bouton n'existe pas sur cette page.
-            # Le clic échouait en silence, le champ mot de passe n'apparaissait jamais,
-            # et l'erreur remontée accusait l'étape 2 alors que l'étape 1 n'était
-            # jamais partie.
-            submit="button[data-testid='button']",
+            # ``data-testid`` d'abord : /login porte aussi un champ « mot de passe
+            # provisoire » à l'inscription, et son ``id``/``name`` change au gré des
+            # libellés (relevé 06/08/2026 : name="Saisissez votre mot de passe
+            # provisoire"). Le ``type`` reste en repli.
+            champ_password="input[data-testid='password'], input[type='password']",
+            # ⚠️ Les DEUX étapes ont des boutons DIFFÉRENTS (relevé 06/08/2026) :
+            # « Connexion / Inscription » puis « Se connecter ». Le code rejouait le
+            # MÊME sélecteur aux deux étapes — ``button[data-testid='button']``, qui
+            # matche toujours l'étape 1 (vérifié en live le 06/08) mais pas le bouton
+            # final, structuré différemment (<span> nu au lieu de <span class="btn-text">).
+            # Ciblage par TEXTE : les ids sont générés par react-aria (« «r53» ») et
+            # les data-testid ont déjà bougé une fois.
+            submit="button:has-text('Connexion / Inscription')",
+            submit_etape2="button:has-text('Se connecter')",
             var_user="User_P3",
             var_password="Password_P3",
             email_puis_valider=True,
-            # La bannière cookies RECOUVRE le formulaire : sans ce clic, la
-            # soumission est interceptée par l'overlay.
+            # ⚠️ Plus aucun bandeau cookies sur /login au 06/08/2026 (0 correspondance,
+            # toutes variantes confondues). Conservé : le clic est enveloppé d'un
+            # ``suppress``, donc sans effet s'il a disparu — et il peut réapparaître
+            # selon l'état de consentement ou la géolocalisation.
             cookies="button:has-text('Accepter & Fermer')",
         ),
     ),
@@ -222,7 +236,7 @@ async def _ouvrir_formulaire(page, config: ConfigLoginAuto) -> None:
             await page.wait_for_timeout(1000)
 
 
-async def _valider(page, config: ConfigLoginAuto, etape: str) -> None:
+async def _valider(page, selecteur: str, etape: str) -> None:
     """Clique le bouton de soumission ; **replie sur Entrée** et trace tout échec.
 
     Ce clic ne doit jamais être silencieux : quand le sélecteur ne correspond
@@ -231,16 +245,16 @@ async def _valider(page, config: ConfigLoginAuto, etape: str) -> None:
     dont le bouton a bougé se soumet presque toujours par Entrée, le champ ayant
     le focus après le ``fill``.
     """
-    bouton = page.locator(config.submit).first
+    bouton = page.locator(selecteur).first
     try:
         if await bouton.count():
             await bouton.click(timeout=6000, no_wait_after=True)
             return
         _log.warning("Auto-login : bouton « %s » introuvable (%s) — repli sur Entrée.",
-                     config.submit, etape)
+                     selecteur, etape)
     except Exception as exc:
         _log.warning("Auto-login : clic sur « %s » en échec (%s) : %s — repli sur Entrée.",
-                     config.submit, etape, exc)
+                     selecteur, etape, exc)
     with contextlib.suppress(Exception):
         await page.keyboard.press("Enter")
 
@@ -295,12 +309,13 @@ async def login_auto(fournisseur: str, chemin_session: Path,
             await _ouvrir_formulaire(page, config.auto)
             await (await _champ_visible(page, config.auto.champ_email)).fill(user, timeout=6000)
             if config.auto.email_puis_valider:
-                await _valider(page, config.auto, "validation de l'email (étape 1/2)")
+                await _valider(page, config.auto.submit, "validation de l'email (étape 1/2)")
                 await page.wait_for_timeout(1500)
             await (await _champ_visible(page, config.auto.champ_password)).fill(
                 mdp, timeout=12000 if config.auto.email_puis_valider else 6000
             )
-            await _valider(page, config.auto, "soumission du mot de passe")
+            await _valider(page, config.auto.submit_etape2 or config.auto.submit,
+                           "soumission du mot de passe")
             connecte = await _attendre_connecte(contexte, config.selecteur_connecte)
             if connecte:
                 etat = await contexte.storage_state()

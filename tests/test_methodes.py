@@ -365,6 +365,44 @@ class TestRegistre:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# core/login_auto — configuration (le live n'est pas testable ici)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConfigLogin:
+
+    def test_prolians_a_deux_boutons_distincts(self):
+        """Login en 2 étapes : « Connexion / Inscription » puis « Se connecter ».
+
+        Rejouer le même sélecteur aux deux étapes laissait la soumission finale
+        sans bouton — et l'erreur remontait sur le champ mot de passe.
+        """
+        from core.login_auto import config_login
+        auto = config_login("prolians").auto
+        assert auto.email_puis_valider is True
+        assert auto.submit_etape2
+        assert auto.submit != auto.submit_etape2
+
+    def test_etape2_retombe_sur_submit_par_defaut(self):
+        """Un site en une seule étape n'a pas à déclarer deux boutons."""
+        from core.login_auto import config_login
+        auto = config_login("setin").auto
+        assert auto.submit_etape2 is None
+
+    def test_legallais_sans_auto_login(self):
+        """Captcha proof-of-work : refuser explicitement vaut mieux que boucler."""
+        from core.login_auto import config_login
+        config = config_login("legallais")
+        assert config.moteur == "botasaurus"
+        assert config.auto is None
+
+    def test_identifiants_lus_dans_l_environnement(self):
+        from core.login_auto import config_login, identifiants
+        auto = config_login("prolians").auto
+        assert identifiants(auto, {"User_P3": "u", "Password_P3": "p"}) == ("u", "p")
+        assert identifiants(auto, {}) == ("", "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Prolians — méthode « api »
 # ═══════════════════════════════════════════════════════════════════════════════
 
