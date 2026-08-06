@@ -208,6 +208,30 @@ SITE_DB_PATHS: dict[str, Path] = {
 - Clé **minuscules**, sans espace (utilisée pour les noms de tables `acme_products`, etc.).
 - Aligner avec le slug passé aux appels `init_site_db("acme")`, `insert_product(conn, "acme", row)`, etc. dans les scrapers.
 
+**En production, la base est MariaDB** (`db/mariadb_db.py`) : ajouter le préfixe de tables dans `SITE_PREFIX` :
+
+```python
+SITE_PREFIX: dict[str, str] = {
+  ...
+  "acme": "P9",   # → tables P9_products / P9_orders / P9_tracking
+}
+```
+
+### 4.3 bis `core/dedup.py` — **unicité des fiches produit**
+
+**Pourquoi :** chaque ligne produit porte un `product_uid` sous index UNIQUE. Ce sont les critères de `CRITERES_PAR_SITE` qui déterminent ce qui fait qu'une fiche est « la même ». Un site absent de ce dictionnaire retombe silencieusement sur `CRITERES_DEFAUT` (`("url",)`), ce qui fonctionne mais n'est pas un choix explicite.
+
+**À ajouter :**
+
+```python
+CRITERES_PAR_SITE: dict[str, tuple[str, ...]] = {
+  ...
+  "acme": ("url",),          # ou ("ref", "url") si la référence est fiable
+}
+```
+
+Comment trancher : lancer `python dedoublonnage.py --site acme --criteres ref` après un premier scrape. Si le rapport signale beaucoup de **conflits**, c'est que la même référence désigne des articles différents (cas Legallais et Sider, dont les déclinaisons portent la référence du parent) → rester sur `("url",)`. Zéro conflit → la référence est fiable, elle regroupe les alias d'URL du fournisseur (cas Sonepar).
+
 ### 4.4 `core/config.py` — **optionnel**
 
 **Pourquoi :** cohérence avec les constantes existantes `SETIN_DB_PATH`, `LEGALLAIS_DB_PATH`, `PROLIANS_DB_PATH`.
