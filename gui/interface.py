@@ -22,10 +22,12 @@ import threading
 import asyncio
 import os
 import tempfile
+import time
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from importlib import import_module
 
+from gui.journal import PontJournal
 from gui.site_config import SITES_CONFIG
 from core.config import CSV_HEADERS, ORDERS_CSV_HEADERS, TRACKING_CSV_HEADERS
 
@@ -271,6 +273,15 @@ class ScraperApp(tk.Tk):
         self._worker_thread: threading.Thread | None = None
         self._async_loop: asyncio.AbstractEventLoop | None = None
         self._async_task = None
+
+        # Journal en direct : le scraper dépose ses lignes dans le pont depuis son
+        # thread, l'interface les consomme depuis le sien.
+        self._pont_journal = PontJournal()
+        self._journal_tache = None
+        self._debut_run: float | None = None
+        self._phase_courante = "En cours de scraping…"
+        self._fin_traitee = True
+        self._resultat_run: dict = {"path": "", "echec": None}
 
         self._build_header()
         self._build_body()
@@ -583,7 +594,45 @@ class ScraperApp(tk.Tk):
                                 bg=BG, fg=GRAY, wraplength=660, justify="center")
         frm.lbl_csv.pack(pady=(2, 0))
 
+        # ─── Journal en direct ────────────────────────────────────────────────
+        # Les scrapers historiques ne remontent pas de progression : ils
+        # journalisent. On affiche donc leur journal, ce qui donne un retour
+        # vivant sans avoir à modifier un seul scraper.
+        jrow = tk.Frame(frm, bg=BG)
+        jrow.pack(fill="x", padx=24, pady=(8, 0))
+        tk.Label(jrow, text="Journal du scrape", font=("Helvetica", 9, "bold"),
+                 bg=BG, fg=GRAY, anchor="w").pack(fill="x")
+
+        jbox = tk.Frame(jrow, bg=BG)
+        jbox.pack(fill="x")
+        barre = tk.Scrollbar(jbox, orient="vertical")
+        barre.pack(side="right", fill="y")
+        frm.journal = tk.Text(
+            jbox, height=9, wrap="none", font=("Consolas", 8),
+            bg=WHITE, fg=BLACK, relief="flat", borderwidth=1,
+            yscrollcommand=barre.set, state="disabled",
+        )
+        frm.journal.pack(side="left", fill="x", expand=True)
+        barre.config(command=frm.journal.yview)
+        #: Suivre automatiquement la fin tant que l'utilisateur n'a pas remonté.
+        frm.journal_suivi = True
+        frm.journal.bind(
+            "<MouseWheel>", lambda _e, f=frm: self._journal_liberer_suivi(f)
+        )
+
         return frm
+
+    @staticmethod
+    def _journal_liberer_suivi(frm) -> None:
+        """L'utilisateur a molette : on cesse de forcer le défilement.
+
+        Sans ça, impossible de relire une ligne passée — chaque nouvelle ligne
+        ramènerait la vue en bas. On reprend le suivi dès qu'il revient au bout.
+        """
+        try:
+            frm.journal_suivi = frm.journal.yview()[1] >= 0.999
+        except Exception:
+            frm.journal_suivi = True
 
     # ─── Navigation ───────────────────────────────────────────────────────────
 
@@ -591,12 +640,14 @@ class ScraperApp(tk.Tk):
     _SITE_AVAILABLE_ACTIONS: dict[str, set[str]] = {
         "Sonepar": {"produits", "refs", "commandes", "suivi", "suppr"},
         # Prolians : 2 modes GraphQL en plus (catalogue léger + MAJ prix/stock)
-        "Prolians": {"produits", "catalogue_complet", "catalogue_light_full",
+        "Prolians": {"produits", "methode", "catalogue_complet", "catalogue_light_full",
                      "maj_prixstock",
                      "commandes", "suivi", "suppr", "refs"},
         "Sider": {"produits", "catalogue_light_full"},
     }
-    _ALL_ACTIONS: set[str] = {"produits", "commandes", "suivi", "suppr", "refs"}
+    #: Sites sans entrée ci-dessus. « methode » y figure : le bouton se grise tout
+    #: seul quand le fournisseur n'a aucune voie enregistrée (cf. _peupler_methodes).
+    _ALL_ACTIONS: set[str] = {"produits", "methode", "commandes", "suivi", "suppr", "refs"}
 
     def _select_site(self, name: str):
         self._site = name
@@ -1254,15 +1305,111 @@ class ScraperApp(tk.Tk):
         site_key = self._SITE_KEYS.get(self._site, "")
         if not site_key:
             return
-        try:
-            self.after(0, lambda: self._set_done(key, "Dédoublonnage..."))
-        except Exception:
-            pass
+        # Le battement de progression réécrit le libellé toutes les 250 ms : c'est
+        # la PHASE qu'il faut changer, sinon « Dédoublonnage » disparaîtrait aussitôt.
+        self._phase_courante = "Dédoublonnage des fiches…"
         try:
             from db.mariadb_db import dedupliquer_apres_scrape
             dedupliquer_apres_scrape(site_key)
         except Exception:
             pass
+
+    # ─── Journal en direct ────────────────────────────────────────────────────
+
+    #: Lignes conservées à l'écran. Au-delà, on coupe le haut — le fichier de
+    #: log garde tout, l'écran n'a besoin que du contexte récent.
+    _JOURNAL_MAX_LIGNES = 400
+
+    #: Cadence de vidage de la file (ms). Assez court pour paraître vivant,
+    #: assez long pour absorber les rafales en paquets.
+    _JOURNAL_PERIODE_MS = 250
+
+    def _journal_ecrire(self, key: str, lignes: list[str]) -> None:
+        """Ajoute des lignes au journal du panneau et élague le haut."""
+        if not lignes:
+            return
+        zone = self._panels[key].journal
+        zone.config(state="normal")
+        zone.insert("end", "\n".join(lignes) + "\n")
+        total = int(zone.index("end-1c").split(".")[0])
+        if total > self._JOURNAL_MAX_LIGNES:
+            zone.delete("1.0", f"{total - self._JOURNAL_MAX_LIGNES}.0")
+        zone.config(state="disabled")
+        if self._panels[key].journal_suivi:
+            zone.see("end")
+
+    def _journal_vider(self, key: str) -> None:
+        """Efface le journal affiché (nouveau run = écran propre)."""
+        zone = self._panels[key].journal
+        zone.config(state="normal")
+        zone.delete("1.0", "end")
+        zone.config(state="disabled")
+        self._panels[key].journal_suivi = True
+
+    def _journal_pomper(self, key: str) -> None:
+        """Vide la file dans le panneau, puis se replanifie tant que le run dure.
+
+        Tourne sur le thread Tkinter (planifié par ``after``) : c'est le seul
+        endroit où l'on touche aux widgets. Le scraper, lui, ne fait que déposer
+        des lignes dans la file depuis son thread.
+        """
+        self._journal_ecrire(key, self._pont_journal.lignes())
+        if self._running:
+            self._afficher_duree(key)
+            self._journal_tache = self.after(
+                self._JOURNAL_PERIODE_MS, lambda: self._journal_pomper(key)
+            )
+        else:
+            # Dernier passage : ne rien perdre de ce qui est arrivé après l'arrêt.
+            self._journal_ecrire(key, self._pont_journal.lignes())
+            self._journal_tache = None
+            # ⚠️ C'EST ICI que le run est clos, pas dans le ``after`` du thread de
+            # travail : ``Tk.after`` appelé depuis un autre thread n'est pas
+            # thread-safe et sa tâche peut n'être jamais servie — le panneau restait
+            # alors bloqué sur « En cours » et le pont journal branché. La pompe,
+            # elle, tourne sur le thread Tkinter : elle voit toujours la fin.
+            self._finaliser(key)
+
+    def _afficher_duree(self, key: str) -> None:
+        """Affiche la phase en cours et le temps écoulé.
+
+        Le compteur est ce qui rend une phase **silencieuse** lisible :
+        l'énumération d'un sitemap ne journalise rien pendant une à deux minutes,
+        et sans lui l'écran est indiscernable d'un scraper bloqué.
+
+        La phase est portée par ``_phase_courante`` pour que le dédoublonnage de
+        fin de run garde son libellé au lieu de se faire recouvrir au prochain
+        battement.
+        """
+        if self._debut_run is None:
+            return
+        secondes = int(time.monotonic() - self._debut_run)
+        duree = f"{secondes // 60} min {secondes % 60:02d} s" if secondes >= 60 else f"{secondes} s"
+        self._panels[key].lbl_status.config(
+            text=f"{self._phase_courante} ({duree})", fg=GREEN_TXT
+        )
+
+    def _demarrer_journal(self, key: str) -> None:
+        """Branche le pont, vide l'écran et lance la pompe. Appelé au lancement."""
+        self._debut_run = time.monotonic()
+        self._phase_courante = "En cours de scraping…"
+        self._fin_traitee = False
+        self._resultat_run = {"path": "", "echec": None}
+        self._journal_vider(key)
+        self._pont_journal.vider()
+        self._pont_journal.installer()
+        self._journal_pomper(key)
+
+    def _arreter_journal(self, key: str) -> None:
+        """Débranche le pont et fait un dernier passage de vidage."""
+        self._pont_journal.retirer()
+        if self._journal_tache is not None:
+            try:
+                self.after_cancel(self._journal_tache)
+            except Exception:
+                pass
+            self._journal_tache = None
+        self._journal_ecrire(key, self._pont_journal.lignes())
 
     def _signaler_echec(self, key: str, exc: BaseException) -> None:
         """Journalise la pile complète et affiche la cause dans le panneau.
@@ -1307,6 +1454,7 @@ class ScraperApp(tk.Tk):
         self._scraper = scraper
         self._running = True
         self._set_running(key)
+        self._demarrer_journal(key)
 
         def _worker():
             # Chaque thread a sa propre boucle asyncio (Tkinter reste sur le thread principal)
@@ -1334,12 +1482,16 @@ class ScraperApp(tk.Tk):
                 else:
                     self._dedupliquer(key)
                 try:
-                    was_running = self._running
-                    self._running = False
                     try:
                         path = get_path()
                     except Exception:
                         path = ""
+                    # Le résultat est publié AVANT de baisser le drapeau : la pompe
+                    # du journal, qui clôt le run dès qu'elle voit _running à False,
+                    # ne doit jamais lire un résultat obsolète.
+                    self._resultat_run = {"path": path, "echec": echec}
+                    was_running = self._running
+                    self._running = False
                     if echec is None:
                         self.after(0, lambda: self._on_done(key, path, was_running))
                     else:
@@ -1358,6 +1510,7 @@ class ScraperApp(tk.Tk):
         self._scraper = scraper
         self._running = True
         self._set_running(key)
+        self._demarrer_journal(key)
 
         def _worker():
             echec: BaseException | None = None
@@ -1373,12 +1526,16 @@ class ScraperApp(tk.Tk):
                 else:
                     self._dedupliquer(key)
                 try:
-                    was_running = self._running
-                    self._running = False
                     try:
                         path = get_path()
                     except Exception:
                         path = ""
+                    # Le résultat est publié AVANT de baisser le drapeau : la pompe
+                    # du journal, qui clôt le run dès qu'elle voit _running à False,
+                    # ne doit jamais lire un résultat obsolète.
+                    self._resultat_run = {"path": path, "echec": echec}
+                    was_running = self._running
+                    self._running = False
                     if echec is None:
                         self.after(0, lambda: self._on_done(key, path, was_running))
                     else:
@@ -1393,20 +1550,41 @@ class ScraperApp(tk.Tk):
         self._worker_thread = threading.Thread(target=_worker, daemon=True)
         self._worker_thread.start()
 
-    def _on_done(self, key: str, csv_path: str, _was_running: bool):
+    def _finaliser(self, key: str) -> None:
+        """Clôt le run : libère les verrous, débranche le journal, affiche le bilan.
+
+        **Idempotent** : appelée par la pompe du journal (thread Tkinter, fiable)
+        et par le ``after`` du thread de travail (best-effort). La première des
+        deux fait le travail, la seconde ne fait rien.
+        """
+        if self._fin_traitee:
+            return
+        self._fin_traitee = True
         self._running = False
         self._scraper = None
         self._worker_thread = None  # libère le verrou pour relancer un autre scrap
-        self._set_done(key, "Terminé ✔")
-        self._set_csv_label(key, csv_path)
+        self._arreter_journal(key)
+
+        echec = self._resultat_run.get("echec")
+        if echec is None:
+            self._set_done(key, f"Terminé ✔{self._duree_ecoulee()}")
+            self._set_csv_label(key, self._resultat_run.get("path") or "")
+        else:
+            # ``_signaler_echec`` a déjà posé la cause en rouge : on ne la recouvre
+            # pas d'un statut de succès.
+            self._panels[key].dot.config(fg=GRAY)
+
+    def _on_done(self, key: str, csv_path: str, _was_running: bool):
+        self._finaliser(key)
 
     def _on_echec(self, key: str):
-        """Libère les verrous sans écrire « Terminé » — le message d'échec reste.
+        self._finaliser(key)
 
-        ``_signaler_echec`` a déjà posé la cause dans le libellé ; on ne la
-        recouvre pas d'un statut de succès.
-        """
-        self._running = False
-        self._scraper = None
-        self._worker_thread = None
-        self._panels[key].dot.config(fg=GRAY)
+    def _duree_ecoulee(self) -> str:
+        """« — 4 min 12 s » depuis le début du run, ou "" si non démarré."""
+        if self._debut_run is None:
+            return ""
+        secondes = int(time.monotonic() - self._debut_run)
+        if secondes >= 60:
+            return f" — {secondes // 60} min {secondes % 60:02d} s"
+        return f" — {secondes} s"

@@ -599,6 +599,29 @@ def _grouper_par_uid(cur, table: str, site: str, criteres: tuple[str, ...],
     return groupes, actuels
 
 
+def _ecrire_uids(cur, table: str, paires: list[tuple[str, int]]) -> None:
+    """Écrit les uid d'un lot en **une seule** requête (``CASE`` sur l'id).
+
+    ⚠️ ``executemany`` ne regroupe que les ``INSERT … VALUES`` : sur un ``UPDATE``,
+    pymysql boucle et envoie une requête PAR LIGNE. Le premier passage sur une
+    table de 80 000 fiches faisait donc 80 000 allers-retours vers une base
+    distante — plusieurs minutes pendant lesquelles la GUI semblait figée à la
+    fin de chaque scrape. Un ``CASE`` par lot ramène cela à quelques centaines de
+    requêtes.
+    """
+    if not paires:
+        return
+    cas = " ".join("WHEN %s THEN %s" for _ in paires)
+    marqueurs = ", ".join("%s" for _ in paires)
+    valeurs = [v for uid, row_id in paires for v in (row_id, uid)]
+    valeurs += [row_id for _uid, row_id in paires]
+    cur.execute(
+        f"UPDATE `{table}` SET `{COLONNE_UID}` = CASE `id` {cas} END "
+        f"WHERE `id` IN ({marqueurs})",
+        valeurs,
+    )
+
+
 def _lire_lignes(cur, table: str, ids: list[int]) -> dict[int, dict]:
     """Charge les lignes complètes correspondant à ``ids``."""
     colonnes = ", ".join(f"`{h}`" for h in CSV_HEADERS)
@@ -717,9 +740,7 @@ def deduplicate_products(site: str, apply: bool = False, strict: bool = True,
                     if i not in supprimes and uid_actuels.get(i) != uid
                 ]
                 for lot in _lots(paires):
-                    cur.executemany(
-                        f"UPDATE `{table}` SET `{COLONNE_UID}` = %s WHERE `id` = %s", lot
-                    )
+                    _ecrire_uids(cur, table, lot)
                 conn.commit()
                 _log.info(
                     "deduplicate_products(%s) : %d ligne(s) supprimée(s), %d uid écrits",
