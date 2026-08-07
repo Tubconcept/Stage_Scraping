@@ -413,6 +413,84 @@ class TestVerdictRetrait:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Cycle de vie des articles
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCycleVie:
+
+    def test_verdicts_de_retrait_coherents_entre_scripts(self):
+        """verifier_retraits produit les verdicts, cycle_vie les consomme.
+
+        Les deux listes vivent dans deux fichiers : si l'une gagne un verdict que
+        l'autre ignore, des retraits confirmés seraient silencieusement sautés.
+        """
+        import cycle_vie
+        import verifier_retraits
+        assert set(cycle_vie.VERDICTS_RETRAIT) == set(verifier_retraits.VERDICTS_RETRAIT)
+
+    def test_libelle_de_stock_sans_ambiguite(self):
+        """« PAS EN STOCK » voudrait dire « en rupture », pas « n'existe plus ».
+
+        Le libellé ne doit ressembler à AUCUN vocabulaire de disponibilité déjà
+        présent en base, sous peine d'être mappé comme une rupture passagère.
+        """
+        from db.mariadb_db import LIBELLE_STOCK_RETIRE
+        deja_utilises = {
+            "EN STOCK", "PAS EN STOCK", "disponible", "non disponible",
+            "En Stock", "Produit non retournable",
+        }
+        assert LIBELLE_STOCK_RETIRE not in deja_utilises
+        assert "RETIRE" in LIBELLE_STOCK_RETIRE.upper()
+
+    def test_etats_distincts(self):
+        from db.mariadb_db import ETAT_ACTIF, ETAT_DOUTEUX, ETAT_RETIRE
+        assert len({ETAT_ACTIF, ETAT_DOUTEUX, ETAT_RETIRE}) == 3
+
+    def test_lire_verdicts_absents(self, tmp_path, monkeypatch):
+        """Sans fichier de verdicts, on ne fabrique pas de décision."""
+        import cycle_vie
+        monkeypatch.setattr(cycle_vie, "DOSSIER", tmp_path)
+        assert cycle_vie.lire_verdicts("sider") == {}
+
+    def test_lire_verdicts(self, tmp_path, monkeypatch):
+        import cycle_vie
+        (tmp_path / "verdicts_sider.csv").write_text(
+            'url;statut;verdict;url_finale;indices\n'
+            '"https://a.fr/1";"404";"retire";"https://a.fr/1";""\n'
+            '"https://a.fr/2";"200";"publie";"https://a.fr/2";""\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cycle_vie, "DOSSIER", tmp_path)
+        verdicts = cycle_vie.lire_verdicts("sider")
+        assert verdicts == {"https://a.fr/1": "retire", "https://a.fr/2": "publie"}
+
+    def test_colonnes_cycle_vie_hors_csv_headers(self):
+        """Elles ne doivent pas polluer l'export CSV ni le mapping produit."""
+        from db.mariadb_db import _COLONNES_CYCLE_VIE
+        assert not set(_COLONNES_CYCLE_VIE) & set(CSV_HEADERS)
+
+    def test_marquage_part_par_lots(self, monkeypatch):
+        """Marquer ligne à ligne referait 80 000 allers-retours."""
+        import db.mariadb_db as mdb
+
+        vidages = []
+        monkeypatch.setattr(mdb, "vider_marquage", lambda site: vidages.append(site))
+        monkeypatch.setattr(mdb, "_VUES_EN_ATTENTE", __import__("collections").defaultdict(list))
+        for i in range(mdb.SEUIL_MARQUAGE - 1):
+            mdb.marquer_vue("sider", f"uid{i}")
+        assert vidages == []
+        mdb.marquer_vue("sider", "declencheur")
+        assert vidages == ["sider"]
+
+    def test_marquage_ignore_un_uid_absent(self):
+        import db.mariadb_db as mdb
+        avant = len(mdb._VUES_EN_ATTENTE["testsite"])
+        mdb.marquer_vue("testsite", None)
+        mdb.marquer_vue("testsite", "")
+        assert len(mdb._VUES_EN_ATTENTE["testsite"]) == avant
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # core/methodes
 # ═══════════════════════════════════════════════════════════════════════════════
 

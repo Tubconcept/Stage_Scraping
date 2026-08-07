@@ -140,6 +140,82 @@ def _a_index_unique(cur, table: str, colonne: str) -> bool:
     return False
 
 
+# ─── Cycle de vie des articles ────────────────────────────────────────────────
+
+#: Colonnes de suivi du cycle de vie, hors CSV_HEADERS (comme product_uid).
+COL_VUE = "derniere_vue_le"
+COL_ETAT = "etat_fournisseur"
+COL_ABSENCES = "absences_consecutives"
+COL_RETIRE_LE = "retire_le"
+COL_VERIFIE_LE = "verifie_le"
+
+ETAT_ACTIF = "actif"
+ETAT_DOUTEUX = "douteux"
+ETAT_RETIRE = "retire"
+
+#: Libellé écrit dans product_stock_status sur un retrait confirmé.
+#: ⚠️ Le mapping « texte → quantité » du PIM doit le faire tomber à 0. On choisit
+#: un libellé EXPLICITE plutôt que le vocabulaire de chaque fournisseur : « PAS EN
+#: STOCK » signifierait « en rupture », pas « n'existe plus ».
+LIBELLE_STOCK_RETIRE = "RETIRE DU CATALOGUE"
+
+#: Colonnes ajoutées aux tables produits, avec leur définition SQL.
+_COLONNES_CYCLE_VIE: dict[str, str] = {
+    COL_VUE: "DATETIME NULL",
+    COL_ETAT: "VARCHAR(16) NULL",
+    COL_ABSENCES: "INT NOT NULL DEFAULT 0",
+    COL_RETIRE_LE: "DATETIME NULL",
+    COL_VERIFIE_LE: "DATETIME NULL",
+}
+
+
+def _ensure_cycle_vie(cur, table: str) -> None:
+    """Ajoute les colonnes de cycle de vie si elles manquent (idempotent)."""
+    cur.execute(f"SHOW COLUMNS FROM `{table}`")
+    presentes = {ligne[0] for ligne in cur.fetchall()}
+    for colonne, definition in _COLONNES_CYCLE_VIE.items():
+        if colonne not in presentes:
+            cur.execute(f"ALTER TABLE `{table}` ADD COLUMN `{colonne}` {definition}")
+            _log.info("Colonne %s ajoutée à %s", colonne, table)
+    # Un balayage cherche « les fiches non vues depuis X » : sans index, c'est un
+    # parcours complet de 100 000 lignes à chaque run.
+    if not _a_index(cur, table, COL_VUE):
+        try:
+            cur.execute(f"ALTER TABLE `{table}` ADD INDEX `idx_{table}_vue` (`{COL_VUE}`)")
+        except pymysql.Error as e:
+            _log.warning("Index sur %s.%s non créé : %s", table, COL_VUE, e)
+
+
+def _a_index(cur, table: str, colonne: str) -> bool:
+    """True si une colonne porte un index, unique ou non."""
+    cur.execute(f"SHOW INDEX FROM `{table}`")
+    return any(ligne[4] == colonne for ligne in cur.fetchall())
+
+
+def _ensure_table_runs(cur) -> None:
+    """Crée le journal des runs de scraping.
+
+    ⚠️ C'est la **pièce de sûreté** de tout le mécanisme : seul un run marqué
+    ``complet`` autorise un balayage. Un run limité, incrémental, confiné à une
+    catégorie ou interrompu ne doit JAMAIS conclure à une absence — sinon un
+    crash à 30 % marque 70 % du catalogue comme retiré.
+    """
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS `runs_scrape` ("
+        "  `id` INT AUTO_INCREMENT PRIMARY KEY,"
+        "  `fournisseur` VARCHAR(32) NOT NULL,"
+        "  `methode` VARCHAR(32) NULL,"
+        "  `debut` DATETIME NOT NULL,"
+        "  `fin` DATETIME NULL,"
+        "  `complet` TINYINT(1) NOT NULL DEFAULT 0,"
+        "  `enumerees` INT NULL,"
+        "  `ecrites` INT NULL,"
+        "  `note` TEXT NULL,"
+        "  INDEX `idx_runs_fournisseur` (`fournisseur`, `debut`)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    )
+
+
 def _ensure_unicite_produits(cur, table: str) -> None:
     """Ajoute la colonne product_uid et son index UNIQUE si nécessaire.
 
@@ -199,7 +275,9 @@ def _ensure_tables(site: str) -> None:
                         _log.warning("UNIQUE %s.%s non posée : %s", table, unique_col, e)
                 if kind == "products":
                     _ensure_unicite_produits(cur, table)
+                    _ensure_cycle_vie(cur, table)
                 _log.debug("Table prête : %s", table)
+            _ensure_table_runs(cur)
             # Séquence globale d'index pour les groupes de déclinaisons
             cur.execute(
                 f"CREATE SEQUENCE IF NOT EXISTS `seq_decli_{prefix}`"
@@ -344,10 +422,12 @@ def save_product(_conn, site: str, row: dict,
             trouve = _chercher_fiche(cur, table, site, row, cles)
 
             if trouve is None:
-                colonnes = CSV_HEADERS + [COLONNE_UID]
-                cols = ", ".join(f"`{h}`" for h in colonnes)
-                ph = ", ".join("%s" for _ in colonnes)
-                valeurs = [str(row.get(h, "") or "") for h in CSV_HEADERS] + [uid]
+                # ``derniere_vue_le`` part dans l'INSERT lui-même : marquer une
+                # fiche neuve ne doit rien coûter de plus.
+                colonnes = CSV_HEADERS + [COLONNE_UID, COL_ETAT]
+                cols = ", ".join(f"`{h}`" for h in colonnes) + f", `{COL_VUE}`"
+                ph = ", ".join("%s" for _ in colonnes) + ", NOW()"
+                valeurs = [str(row.get(h, "") or "") for h in CSV_HEADERS] + [uid, ETAT_ACTIF]
                 try:
                     cur.execute(
                         f"INSERT INTO `{table}` ({cols}) VALUES ({ph})", valeurs
@@ -372,14 +452,27 @@ def save_product(_conn, site: str, row: dict,
             if uid and existante.get(COLONNE_UID) != uid:
                 maj[COLONNE_UID] = uid
             if not maj:
+                # Fiche retrouvée à l'identique : RIEN à réécrire, mais elle a
+                # bel et bien été VUE. Le marquage part en lot plus tard — une
+                # requête par fiche inchangée referait les 80 000 allers-retours
+                # que le dédoublonnage a déjà payés une fois.
+                marquer_vue(site, uid)
                 return "inchange"
 
-            set_clause = ", ".join(f"`{c}`=%s" for c in maj)
-            try:
+            # La fiche est réécrite de toute façon : le marquage voyage avec,
+            # sans requête supplémentaire.
+            marquage = (f", `{COL_VUE}` = NOW(), `{COL_ETAT}` = %s, "
+                        f"`{COL_ABSENCES}` = 0")
+
+            def _ecrire(colonnes: dict) -> None:
+                clause = ", ".join(f"`{c}`=%s" for c in colonnes) + marquage
                 cur.execute(
-                    f"UPDATE `{table}` SET {set_clause} WHERE `id` = %s",
-                    list(maj.values()) + [row_id],
+                    f"UPDATE `{table}` SET {clause} WHERE `id` = %s",
+                    [*colonnes.values(), ETAT_ACTIF, row_id],
                 )
+
+            try:
+                _ecrire(maj)
             except pymysql.IntegrityError:
                 # L'uid calculé appartient déjà à une AUTRE ligne (doublon
                 # hérité pas encore fusionné) : on enrichit sans toucher l'uid,
@@ -387,12 +480,9 @@ def save_product(_conn, site: str, row: dict,
                 conn.rollback()
                 maj.pop(COLONNE_UID, None)
                 if not maj:
+                    marquer_vue(site, uid)
                     return "inchange"
-                set_clause = ", ".join(f"`{c}`=%s" for c in maj)
-                cur.execute(
-                    f"UPDATE `{table}` SET {set_clause} WHERE `id` = %s",
-                    list(maj.values()) + [row_id],
-                )
+                _ecrire(maj)
             conn.commit()
             return "update"
     except pymysql.Error as e:
@@ -552,6 +642,225 @@ def update_product_fields(_conn, site: str, ref: str, fields: dict,
         return False
     finally:
         conn_db.close()
+
+
+# ─── Marquage « vue au dernier passage » ──────────────────────────────────────
+
+#: Uid en attente de marquage, par site. Vidé automatiquement au seuil et en fin
+#: de run. Tampon de module — même portée que la connexion, et vidage déterministe.
+_VUES_EN_ATTENTE: dict[str, list[str]] = defaultdict(list)
+
+#: Uid accumulés avant écriture. Un marquage ligne à ligne referait les 80 000
+#: allers-retours que le dédoublonnage a déjà payés une fois.
+SEUIL_MARQUAGE = 500
+
+
+def marquer_vue(site: str, uid: str | None) -> None:
+    """Note qu'une fiche a été **confirmée présente** lors du passage en cours.
+
+    Distinguer « vue et inchangée » de « pas vue du tout » est TOUTE la base du
+    suivi de cycle de vie : sans ça, une fiche que le scrape retrouve identique
+    est indiscernable d'une fiche disparue.
+
+    L'écriture est différée : les uid s'accumulent et partent par lots.
+    """
+    if not uid:
+        return
+    tampon = _VUES_EN_ATTENTE[site]
+    tampon.append(uid)
+    if len(tampon) >= SEUIL_MARQUAGE:
+        vider_marquage(site)
+
+
+def vider_marquage(site: str) -> int:
+    """Écrit les marquages en attente. Retourne le nombre de fiches marquées."""
+    tampon = _VUES_EN_ATTENTE.get(site)
+    if not tampon:
+        return 0
+    uids, _VUES_EN_ATTENTE[site] = tampon, []
+    table = _table(site, "products")
+    conn = _get_conn()
+    total = 0
+    try:
+        with conn.cursor() as cur:
+            for lot in _lots(uids):
+                marqueurs = ", ".join("%s" for _ in lot)
+                cur.execute(
+                    f"UPDATE `{table}` SET `{COL_VUE}` = NOW(), "
+                    f"`{COL_ABSENCES}` = 0, `{COL_ETAT}` = %s "
+                    f"WHERE `{COLONNE_UID}` IN ({marqueurs})",
+                    [ETAT_ACTIF, *lot],
+                )
+                total += cur.rowcount
+        conn.commit()
+    except pymysql.Error as e:
+        conn.rollback()
+        _log.warning("Marquage %s échoué (%d uid) : %s", site, len(uids), e)
+    finally:
+        conn.close()
+    return total
+
+
+# ─── Journal des runs ─────────────────────────────────────────────────────────
+
+def ouvrir_run(site: str, methode: str | None = None) -> int | None:
+    """Ouvre un run dans le journal. Retourne son id, ou None si l'écriture échoue."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO `runs_scrape` (`fournisseur`, `methode`, `debut`) "
+                "VALUES (%s, %s, NOW())",
+                (site, methode or ""),
+            )
+            conn.commit()
+            return cur.lastrowid
+    except pymysql.Error as e:
+        conn.rollback()
+        _log.warning("Ouverture de run %s impossible : %s", site, e)
+        return None
+    finally:
+        conn.close()
+
+
+def fermer_run(run_id: int | None, *, complet: bool, enumerees: int | None = None,
+               ecrites: int | None = None, note: str = "") -> None:
+    """Clôt un run. ``complet`` conditionne le droit de balayer.
+
+    ⚠️ Ne passer ``complet=True`` que si l'énumération a couvert **tout** le
+    catalogue : ni ``limit``, ni filtre incrémental, ni catégorie unique, ni
+    interruption. Dans le doute, ``False`` — un run non complet ne fait que
+    rafraîchir des fiches, ce qui est sans danger.
+    """
+    if run_id is None:
+        return
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE `runs_scrape` SET `fin` = NOW(), `complet` = %s, "
+                "`enumerees` = %s, `ecrites` = %s, `note` = %s WHERE `id` = %s",
+                (1 if complet else 0, enumerees, ecrites, note, run_id),
+            )
+        conn.commit()
+    except pymysql.Error as e:
+        conn.rollback()
+        _log.warning("Clôture du run %s impossible : %s", run_id, e)
+    finally:
+        conn.close()
+
+
+def dernier_run_complet(site: str) -> dict | None:
+    """Dernier run complet du fournisseur, ou None. Sert de garde au balayage."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT `id`, `debut`, `fin`, `enumerees`, `ecrites` FROM `runs_scrape` "
+                "WHERE `fournisseur` = %s AND `complet` = 1 AND `fin` IS NOT NULL "
+                "ORDER BY `fin` DESC LIMIT 1",
+                (site,),
+            )
+            ligne = cur.fetchone()
+            if not ligne:
+                return None
+            return dict(zip(("id", "debut", "fin", "enumerees", "ecrites"), ligne))
+    except pymysql.Error:
+        return None
+    finally:
+        conn.close()
+
+
+# ─── Application des verdicts de cycle de vie ─────────────────────────────────
+
+def appliquer_verdicts(site: str, verdicts: dict[str, str], *,
+                       apply: bool = False) -> dict:
+    """Écrit l'état de cycle de vie des fiches d'après des verdicts VÉRIFIÉS.
+
+    ``verdicts`` : ``{url: verdict}`` produit par ``verifier_retraits.py``. Seuls
+    les verdicts de retrait CONFIRMÉ agissent ; « publie », « renomme » et
+    « indetermine » remettent la fiche à l'état actif ou la laissent tranquille.
+
+    ⚠️ **Aucune suppression.** Une fiche retirée garde sa ligne : on écrit son
+    état, la date, et un libellé de stock que le PIM doit faire tomber à zéro.
+    C'est réversible — un article qui réapparaît repasse ``actif`` au prochain
+    passage du scrape (cf. ``marquer_vue``).
+
+    Args:
+        site: fournisseur.
+        verdicts: ``{url: verdict}``.
+        apply: False (défaut) = simulation, aucune écriture.
+
+    Returns:
+        Rapport : retires, reactives, ignores, introuvables.
+    """
+    from core.dedup import normaliser_url
+
+    retraits = {
+        normaliser_url(url) for url, v in verdicts.items()
+        if v in ("retire", "fin_de_vie", "redirige_ailleurs")
+    }
+    vivants = {
+        normaliser_url(url) for url, v in verdicts.items()
+        if v in ("publie", "renomme")
+    }
+    rapport = {"site": site, "applique": apply, "retires": 0, "reactives": 0,
+               "ignores": len(verdicts) - len(retraits) - len(vivants),
+               "introuvables": 0}
+    if not retraits and not vivants:
+        return rapport
+
+    table = _table(site, "products")
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            # On cible par URL normalisée : c'est la clé que la vérification a
+            # utilisée, et une fiche peut porter plusieurs lignes (variantes).
+            cur.execute(
+                f"SELECT `id`, `product_fournisseur_url` FROM `{table}` "
+                f"WHERE `product_fournisseur_url` <> ''"
+            )
+            par_url: dict[str, list[int]] = defaultdict(list)
+            for row_id, url in cur.fetchall():
+                par_url[normaliser_url(url)].append(row_id)
+
+            ids_retires = [i for u in retraits for i in par_url.get(u, [])]
+            ids_vivants = [i for u in vivants for i in par_url.get(u, [])]
+            rapport["retires"] = len(ids_retires)
+            rapport["reactives"] = len(ids_vivants)
+            rapport["introuvables"] = len(
+                [u for u in retraits | vivants if u not in par_url]
+            )
+
+            if apply:
+                for lot in _lots(ids_retires):
+                    marqueurs = ", ".join("%s" for _ in lot)
+                    cur.execute(
+                        f"UPDATE `{table}` SET `{COL_ETAT}` = %s, `{COL_RETIRE_LE}` = NOW(), "
+                        f"`{COL_VERIFIE_LE}` = NOW(), `product_stock_status` = %s "
+                        f"WHERE `id` IN ({marqueurs})",
+                        [ETAT_RETIRE, LIBELLE_STOCK_RETIRE, *lot],
+                    )
+                for lot in _lots(ids_vivants):
+                    marqueurs = ", ".join("%s" for _ in lot)
+                    cur.execute(
+                        f"UPDATE `{table}` SET `{COL_ETAT}` = %s, `{COL_ABSENCES}` = 0, "
+                        f"`{COL_RETIRE_LE}` = NULL, `{COL_VERIFIE_LE}` = NOW() "
+                        f"WHERE `id` IN ({marqueurs})",
+                        [ETAT_ACTIF, *lot],
+                    )
+                conn.commit()
+                _log.info("Cycle de vie %s : %d retirée(s), %d réactivée(s)",
+                          site, len(ids_retires), len(ids_vivants))
+            else:
+                conn.rollback()
+    except pymysql.Error as e:
+        conn.rollback()
+        _log.exception("appliquer_verdicts(%s) échec : %s", site, e)
+        raise
+    finally:
+        conn.close()
+    return rapport
 
 
 # ─── Dédoublonnage rétroactif ─────────────────────────────────────────────────
@@ -780,6 +1089,11 @@ def dedupliquer_apres_scrape(site: str, logger=None) -> dict | None:
     lg = logger or _log
     try:
         _ensure_tables(site)
+        # Le tampon de marquage doit partir AVANT le balayage : une fiche vue mais
+        # non encore écrite passerait sinon pour absente.
+        marquees = vider_marquage(site)
+        if marquees:
+            lg.info("Marquage %s : %d fiche(s) confirmées présentes.", site, marquees)
         rapport = deduplicate_products(site, apply=True, strict=True)
     except Exception as exc:
         lg.warning("Dédoublonnage post-scrape (%s) ignoré : %s", site, exc)

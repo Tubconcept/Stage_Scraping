@@ -345,7 +345,7 @@ def _ligne_existante(row_id: int, uid: str | None, **champs) -> tuple:
 class TestSaveProduct:
 
     def test_fiche_inconnue_inseree_avec_uid(self, sql_capture):
-        from db.mariadb_db import save_product
+        from db.mariadb_db import COL_ETAT, COL_VUE, ETAT_ACTIF, save_product
         curseur = sql_capture(existante=None)
         row = _row(product_fournisseur_url="https://www.sider.biz/p/x.1",
                    product_designation="Mitigeur")
@@ -356,7 +356,12 @@ class TestSaveProduct:
         assert len(inserts) == 1
         sql, params = inserts[0]
         assert COLONNE_UID in sql
-        assert params[-1] == uid_produit("sider", row)
+        assert uid_produit("sider", row) in params
+        # La fiche neuve est datée et marquée active dans le MÊME insert : suivre
+        # le cycle de vie ne doit rien coûter de plus qu'avant.
+        assert COL_VUE in sql
+        assert ETAT_ACTIF in params
+        assert COL_ETAT in sql
 
     def test_fiche_connue_non_dupliquee(self, sql_capture):
         from db.mariadb_db import save_product
