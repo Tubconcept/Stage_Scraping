@@ -1264,6 +1264,28 @@ class ScraperApp(tk.Tk):
         except Exception:
             pass
 
+    def _signaler_echec(self, key: str, exc: BaseException) -> None:
+        """Journalise la pile complète et affiche la cause dans le panneau.
+
+        ⚠️ Les deux workers avalaient toute exception (``except Exception: pass``)
+        puis affichaient « Terminé ✔ » : un scrape qui plantait à la première
+        seconde était indiscernable d'un scrape réussi, et rien — ni la GUI, ni la
+        console — ne disait ce qui bloquait. Un échec doit être VISIBLE.
+        """
+        logger.exception("Action « %s » (%s) en échec", key, self._site)
+        message = f"{type(exc).__name__}: {exc}"
+        court = message if len(message) <= 110 else message[:110] + " […]"
+        try:
+            self.after(0, lambda: self._panels[key].lbl_status.config(
+                text=f"Échec — {court}", fg=BTN_RED))
+            self.after(0, lambda: messagebox.showerror(
+                "Le scraper s'est arrêté",
+                f"{message}\n\nLa pile complète est dans le journal "
+                f"(dossier log/).",
+            ))
+        except Exception:  # Tkinter déjà fermé : le journal a l'essentiel
+            pass
+
     def _read_dates(self, panel) -> tuple[datetime, datetime]:
         df_str = panel.entry_from.get().strip()
         dt_str = panel.entry_to.get().strip()
@@ -1291,14 +1313,15 @@ class ScraperApp(tk.Tk):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self._async_loop = loop
+            echec: BaseException | None = None
             try:
                 task = loop.create_task(coro)
                 self._async_task = task
                 loop.run_until_complete(task)
             except (asyncio.CancelledError, KeyboardInterrupt):
-                pass
-            except Exception:
-                pass
+                pass  # arrêt demandé : ce n'est pas un échec
+            except Exception as exc:
+                echec = exc
             finally:
                 self._async_loop = None
                 self._async_task = None
@@ -1306,7 +1329,10 @@ class ScraperApp(tk.Tk):
                     loop.close()
                 except Exception:
                     pass
-                self._dedupliquer(key)
+                if echec is not None:
+                    self._signaler_echec(key, echec)
+                else:
+                    self._dedupliquer(key)
                 try:
                     was_running = self._running
                     self._running = False
@@ -1314,7 +1340,10 @@ class ScraperApp(tk.Tk):
                         path = get_path()
                     except Exception:
                         path = ""
-                    self.after(0, lambda: self._on_done(key, path, was_running))
+                    if echec is None:
+                        self.after(0, lambda: self._on_done(key, path, was_running))
+                    else:
+                        self.after(0, lambda: self._on_echec(key))
                 except Exception:
                     try:
                         self.after(0, lambda: self._on_done(key, "", False))
@@ -1331,12 +1360,18 @@ class ScraperApp(tk.Tk):
         self._set_running(key)
 
         def _worker():
+            echec: BaseException | None = None
             try:
                 func()
-            except Exception:
-                pass
+            except KeyboardInterrupt:
+                pass  # arrêt injecté par _stop : ce n'est pas un échec
+            except Exception as exc:
+                echec = exc
             finally:
-                self._dedupliquer(key)
+                if echec is not None:
+                    self._signaler_echec(key, echec)
+                else:
+                    self._dedupliquer(key)
                 try:
                     was_running = self._running
                     self._running = False
@@ -1344,7 +1379,10 @@ class ScraperApp(tk.Tk):
                         path = get_path()
                     except Exception:
                         path = ""
-                    self.after(0, lambda: self._on_done(key, path, was_running))
+                    if echec is None:
+                        self.after(0, lambda: self._on_done(key, path, was_running))
+                    else:
+                        self.after(0, lambda: self._on_echec(key))
                 except Exception:
                     # Cas extrême : KeyboardInterrupt injecté une 2e fois dans le finally
                     try:
@@ -1361,3 +1399,14 @@ class ScraperApp(tk.Tk):
         self._worker_thread = None  # libère le verrou pour relancer un autre scrap
         self._set_done(key, "Terminé ✔")
         self._set_csv_label(key, csv_path)
+
+    def _on_echec(self, key: str):
+        """Libère les verrous sans écrire « Terminé » — le message d'échec reste.
+
+        ``_signaler_echec`` a déjà posé la cause dans le libellé ; on ne la
+        recouvre pas d'un statut de succès.
+        """
+        self._running = False
+        self._scraper = None
+        self._worker_thread = None
+        self._panels[key].dot.config(fg=GRAY)

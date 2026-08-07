@@ -39,20 +39,58 @@ def _ensure_session_dir() -> None:
 
 
 def save_cookies(context: BrowserContext) -> None:
-    """Sauvegarde les cookies du contexte dans le fichier de session."""
+    """Sauvegarde la session dans le fichier, au format ``storage_state``.
+
+    ⚠️ **Format unifié.** Ce fichier était historiquement un simple TABLEAU de
+    cookies (``context.cookies()``), alors que les autres fournisseurs et les
+    méthodes rapides (``core/scrap_base.persister_session``) y écrivent un
+    ``storage_state`` — un OBJET ``{"cookies": [...], "origins": [...]}``. Deux
+    formats sur le même chemin : le premier scraper à écrire cassait l'autre, avec
+    un « BrowserContext.add_cookies: cookies: expected array, got object » qui
+    n'apparaissait qu'au lancement suivant.
+
+    On écrit donc désormais le format riche, que ``load_cookies`` sait relire dans
+    les deux formes.
+    """
     _ensure_session_dir()
     with open(SESSION_FILE, "w", encoding="utf-8") as f:
-        json.dump(context.cookies(), f)
+        json.dump(context.storage_state(), f, ensure_ascii=False, indent=2)
     print(f"Session Prolians sauvegardée : {SESSION_FILE.name}")
 
 
+def cookies_depuis_session(donnees) -> list:
+    """Extrait la liste de cookies d'un contenu de session. **Pur**.
+
+    Accepte les deux formes rencontrées sur le disque : le ``storage_state``
+    (objet, clé ``cookies``) et l'ancien tableau nu. Toute autre forme rend une
+    liste vide plutôt que de faire échouer le scraper.
+    """
+    if isinstance(donnees, dict):
+        cookies = donnees.get("cookies")
+        return cookies if isinstance(cookies, list) else []
+    return donnees if isinstance(donnees, list) else []
+
+
 def load_cookies(context: BrowserContext) -> bool:
-    """Charge les cookies si le fichier existe. Retourne True si chargé."""
+    """Charge les cookies si le fichier existe. Retourne True si chargé.
+
+    Tolère les deux formats (storage_state ou tableau nu) : un fichier écrit par
+    une méthode rapide doit rester utilisable par les scrapers historiques, et
+    réciproquement.
+    """
     if not SESSION_FILE.is_file():
         return False
-    with open(SESSION_FILE, "r", encoding="utf-8") as f:
-        context.add_cookies(json.load(f))
-    print(f"Session Prolians chargée : {SESSION_FILE.name}")
+    try:
+        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            cookies = cookies_depuis_session(json.load(f))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Session Prolians illisible ({exc}) — connexion complète requise.")
+        return False
+    if not cookies:
+        print("Session Prolians sans cookie — connexion complète requise.")
+        return False
+    context.add_cookies(cookies)
+    print(f"Session Prolians chargée : {SESSION_FILE.name} ({len(cookies)} cookies)")
     return True
 
 

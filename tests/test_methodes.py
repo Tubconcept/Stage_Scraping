@@ -402,6 +402,43 @@ class TestConfigLogin:
         assert identifiants(auto, {}) == ("", "")
 
 
+class TestSessionProliansPartagee:
+    """Le fichier de session est partagé entre scrapers historiques et méthodes.
+
+    Les deux écrivaient des formats INCOMPATIBLES au même chemin : un tableau de
+    cookies nu côté cookie_manager, un storage_state (objet) côté
+    persister_session. Le premier à écrire cassait l'autre, avec un
+    « add_cookies: cookies: expected array, got object » qui n'apparaissait qu'au
+    lancement suivant.
+    """
+
+    def test_lit_le_storage_state(self):
+        from auth.prolians.cookie_manager import cookies_depuis_session
+        etat = {"cookies": [{"name": "a"}, {"name": "b"}], "origins": []}
+        assert len(cookies_depuis_session(etat)) == 2
+
+    def test_lit_l_ancien_tableau_nu(self):
+        from auth.prolians.cookie_manager import cookies_depuis_session
+        assert len(cookies_depuis_session([{"name": "a"}])) == 1
+
+    def test_forme_inattendue_rend_une_liste_vide(self):
+        """Mieux vaut redemander un login qu'exploser sur un fichier corrompu."""
+        from auth.prolians.cookie_manager import cookies_depuis_session
+        assert cookies_depuis_session("nawak") == []
+        assert cookies_depuis_session({"origins": []}) == []
+        assert cookies_depuis_session(None) == []
+
+    def test_selecteurs_login_alignes_avec_login_auto(self):
+        """Les deux chemins doivent viser le même formulaire, sinon l'un casse seul."""
+        from core.login_auto import config_login
+        from css_selectors.prolians import Selectors
+        auto = config_login("prolians").auto
+        assert Selectors.email_input == auto.champ_email
+        assert Selectors.password_input == auto.champ_password
+        assert Selectors.email_button == auto.submit
+        assert Selectors.submit_button == auto.submit_etape2
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Prolians — méthode « api »
 # ═══════════════════════════════════════════════════════════════════════════════

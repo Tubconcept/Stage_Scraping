@@ -20,10 +20,17 @@ class Selectors:
     LOGIN_URL: str = f"{BASE_URL}/login"
 
     # ─── Formulaire de connexion (flux en 2 étapes : email puis mot de passe) ─
-    email_input         = "input[type='email']"
-    email_button        = "button[aria-label='Connexion / Inscription']"
-    password_input      = "input[aria-label='Mot de passe']"
-    submit_button       = "button#next"
+    # ⚠️ Relevé en live le 06/08/2026 : le formulaire a changé. Ciblage par NOM,
+    # TYPE et TEXTE — surtout pas par ``id`` (générés par react-aria : « «r53» »)
+    # ni par ``aria-label`` du mot de passe, qui porte désormais le libellé entier
+    # « Saisissez votre mot de passe provisoire » et non plus « Mot de passe ».
+    email_input         = "input[name='email']"
+    email_button        = "button:has-text('Connexion / Inscription')"
+    # ``data-testid`` en tête, ``type`` en repli (le name suit le libellé affiché).
+    password_input      = "input[data-testid='password'], input[type='password']"
+    # ⚠️ Bouton de la 2ᵉ étape : « Se connecter », DIFFÉRENT de celui de l'étape 1.
+    # Ce n'est plus ``button#next`` — c'est ce qui bloquait la reconnexion.
+    submit_button       = "button:has-text('Se connecter')"
     logged_in_check     = "button[aria-label='Mon compte']"      # Présent si connecté
     logged_out_check    = "a[aria-label='Connectez-vous']"       # Présent si déconnecté
 
