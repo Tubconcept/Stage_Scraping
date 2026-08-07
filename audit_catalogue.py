@@ -16,15 +16,11 @@ Comparer ce qui est comparable
 Le sitemap énumère des **pages** ; la base contient parfois une ligne **par
 variante**. Chaque fournisseur a donc sa clé de page :
 
-  Prolians  URL telle quelle (une page = un article)
-  Sider     fragment ``#ref`` retiré (alias de la même page)
-  Setin     paramètre ``?idvar=`` retiré — 36 873 lignes pour 17 865 pages
-  Legallais **id de gamme** (segment numérique) : la base stocke
-            ``/produit/<slug>/<gamme>/<article>``, le sitemap publie
-            ``/produit/<slug>/<gamme>``, et les deux slugs DIFFÈRENT
-            (``4-pans---standard`` contre ``4-pans-standard``). Seul l'id est
-            stable — une clé incluant le slug annonçait 12 791 gammes orphelines
-            au lieu de 40.
+Les clés vivent dans ``core/cle_page.py``, avec le pourquoi de chacune. En deux
+mots : **le slug n'identifie rien** — Legallais n'en publie pas le même au
+sitemap que dans ses URL, et Setin renomme ses fiches en place. Seuls les
+identifiants (``aNNNNN`` chez Setin, id de gamme chez Legallais) sont stables.
+
   Sonepar   PAS d'énumération disponible (aucun module sitemap) → non audité.
 
 Utilisation
@@ -41,10 +37,9 @@ import logging
 import sys
 from collections import defaultdict
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
+from core.cle_page import cle_page
 from core.config import DIRECTORY
-from core.dedup import normaliser_url
 from db.mariadb_db import SITE_PREFIX, _get_conn
 
 _log = logging.getLogger(__name__)
@@ -53,31 +48,6 @@ _log = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLÉS DE PAGE (pures)
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _sans_query(url: str) -> str:
-    """URL normalisée, paramètres retirés (Setin : ``?idvar=`` = la variante)."""
-    morceaux = urlsplit(normaliser_url(url))
-    return urlunsplit((morceaux.scheme, morceaux.netloc, morceaux.path, "", ""))
-
-
-def _id_gamme(url: str) -> str:
-    """Premier segment **numérique** du chemin — clé de page Legallais.
-
-    La base stocke ``/produit/<slug>/<gamme>/<article>``, le sitemap publie
-    ``/produit/<slug>/<gamme>`` : le niveau comparable est la **gamme**.
-
-    ⚠️ **Le slug ne doit PAS entrer dans la clé** : Legallais ne publie pas le
-    même que celui des URL réelles (``embouts-4-pans---standard`` en base contre
-    ``embouts-4-pans-standard`` au sitemap — tirets triplés). Une clé incluant le
-    slug faisait tomber la correspondance à 51 % et annonçait 12 791 gammes
-    orphelines ; avec l'id seul, 99,9 % de la base se retrouve au sitemap.
-    L'identifiant numérique, lui, est stable.
-    """
-    for segment in urlsplit(normaliser_url(url)).path.split("/"):
-        if segment.isdigit():
-            return segment
-    return ""
-
 
 def _enumerer_prolians():
     from scrapers.Prolians_P3.products import prolians_sitemap
@@ -102,30 +72,21 @@ def _enumerer_sider():
 #: Par fournisseur : comment énumérer, comment ramener une URL à sa page, et la
 #: réserve à afficher avec le résultat.
 SOURCES: dict[str, dict] = {
-    "prolians": {
-        "enumerer": _enumerer_prolians,
-        "cle": normaliser_url,
-        "reserve": "",
-    },
-    "sider": {
-        "enumerer": _enumerer_sider,
-        "cle": normaliser_url,  # le fragment #ref est retiré par la normalisation
-        "reserve": "",
-    },
+    "prolians": {"enumerer": _enumerer_prolians, "reserve": ""},
+    "sider": {"enumerer": _enumerer_sider, "reserve": ""},
     "setin": {
         "enumerer": _enumerer_setin,
-        "cle": _sans_query,
-        "reserve": "1 page = N variantes : voir « lignes concernées ».",
+        "reserve": "clé = id de fiche « aNNNNN » (le slug est renommé) ; "
+                   "1 page = N variantes.",
     },
     "legallais": {
         "enumerer": _enumerer_legallais,
-        "cle": _id_gamme,
         "reserve": "comparaison au niveau GAMME (id numérique) ; 1 gamme = N articles.",
     },
     # Sonepar : aucun module d'énumération. L'ajouter demanderait de découvrir un
     # sitemap ou de parcourir l'arbre de catégories — hors périmètre d'un audit
     # en lecture seule et bon marché.
-    "sonepar": {"enumerer": None, "cle": None, "reserve": "aucune énumération disponible"},
+    "sonepar": {"enumerer": None, "reserve": "aucune énumération disponible"},
 }
 
 
@@ -159,7 +120,8 @@ def auditer(site: str) -> dict:
         return {"site": site, "auditable": False,
                 "reserve": (source or {}).get("reserve", "fournisseur inconnu")}
 
-    cle = source["cle"]
+    def cle(url: str) -> str:
+        return cle_page(site, url)
     lignes = lignes_en_base(site)
     # On garde les URL, pas seulement les id : ce sont elles qu'il faudra
     # re-fetcher à l'étape de vérification. Pour Legallais la clé est un simple

@@ -322,6 +322,97 @@ class TestContratScraper:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# core/cle_page — identité d'une page, indépendante du libellé
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestClePage:
+    """Le slug n'identifie rien — deux fournisseurs l'ont prouvé en production.
+
+    Une clé incluant le libellé a fait annoncer 12 791 gammes Legallais
+    orphelines au lieu de 40, et comptait les fiches Setin renommées comme
+    retirées. Ces tests verrouillent le contraire.
+    """
+
+    def test_legallais_ignore_le_slug(self):
+        """Le sitemap ne publie pas le même slug que les URL réelles."""
+        from core.cle_page import cle_page
+        base = "https://www.legallais.com/produit/embouts-4-pans---standard/17/541506"
+        site = "https://www.legallais.com/produit/embouts-4-pans-standard/17"
+        assert cle_page("legallais", base) == cle_page("legallais", site) == "17"
+
+    def test_setin_survit_au_renommage(self):
+        """Setin renomme ses fiches en place et redirige : l'id « aNNNNN » tient."""
+        from core.cle_page import cle_page
+        avant = "https://www.setin.fr/extracteur-reglable-unior-682/2-a5676.html"
+        apres = "https://www.setin.fr/extracteur-a-griffe-reglable-unior-tools-a5676.html"
+        assert cle_page("setin", avant) == cle_page("setin", apres) == "a5676"
+
+    def test_setin_ignore_la_variante(self):
+        """``?idvar=`` distingue une variante, pas une page."""
+        from core.cle_page import cle_page
+        assert cle_page("setin", "https://www.setin.fr/kit-a8635.html?idvar=BLU293") == "a8635"
+
+    def test_sider_ignore_le_fragment(self):
+        from core.cle_page import cle_page
+        avec = "https://www.sider.biz/produit/mitigeur.153713594#246390"
+        sans = "https://www.sider.biz/produit/mitigeur.153713594"
+        assert cle_page("sider", avec) == cle_page("sider", sans)
+
+    def test_categorie_setin_reconnue(self):
+        """Une redirection vers « cNNNN » est un repli de rubrique, donc un retrait."""
+        from core.cle_page import est_categorie_setin
+        assert est_categorie_setin("https://www.setin.fr/outils/carottage-c5729.html")
+        assert not est_categorie_setin("https://www.setin.fr/tige-de-centrage-a1432.html")
+
+    def test_sonepar_sans_cle(self):
+        from core.cle_page import cle_page
+        assert cle_page("sonepar", "https://www.sonepar.fr/x") == ""
+
+
+class TestVerdictRetrait:
+    """Le statut HTTP seul ne suffit pas : la CIBLE d'une redirection compte."""
+
+    def test_404_est_un_retrait(self):
+        from verifier_retraits import VERDICT_RETIRE, verdict
+        assert verdict("sider", "u", 404, "u", "")[0] == VERDICT_RETIRE
+
+    def test_403_ne_conclut_rien(self):
+        """Un antibot qui bloque ne dit pas qu'un article est retiré."""
+        from verifier_retraits import VERDICT_INDETERMINE, verdict
+        assert verdict("sider", "u", 403, "u", "")[0] == VERDICT_INDETERMINE
+
+    def test_200_sans_redirection_est_publie(self):
+        from verifier_retraits import VERDICT_PUBLIE, verdict
+        assert verdict("sider", "u", 200, "u", "<html>fiche</html>")[0] == VERDICT_PUBLIE
+
+    def test_redirection_vers_categorie_est_un_retrait(self):
+        from verifier_retraits import VERDICT_REDIRIGE_AILLEURS, verdict
+        decision, _ = verdict(
+            "setin",
+            "https://www.setin.fr/tige-de-centrage-a1432.html", 200,
+            "https://www.setin.fr/outils/carottage-c5729.html", "<html></html>",
+        )
+        assert decision == VERDICT_REDIRIGE_AILLEURS
+
+    def test_redirection_de_meme_id_est_un_renommage(self):
+        """Même fiche, nouveau libellé : l'article est VIVANT."""
+        from verifier_retraits import VERDICT_RENOMME, verdict
+        decision, _ = verdict(
+            "setin",
+            "https://www.setin.fr/extracteur-reglable-a5676.html", 200,
+            "https://www.setin.fr/extracteur-a-griffe-unior-tools-a5676.html", "<html></html>",
+        )
+        assert decision == VERDICT_RENOMME
+
+    def test_mention_explicite_prime(self):
+        from verifier_retraits import VERDICT_FIN_DE_VIE, verdict
+        decision, indices = verdict(
+            "sider", "u", 200, "u", "<p>Ce produit n'est plus disponible.</p>")
+        assert decision == VERDICT_FIN_DE_VIE
+        assert "n'est plus disponible" in indices
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # core/methodes
 # ═══════════════════════════════════════════════════════════════════════════════
 
