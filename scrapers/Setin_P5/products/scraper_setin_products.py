@@ -33,7 +33,7 @@ from playwright.async_api import ElementHandle, Locator, Page, TimeoutError as P
 
 from css_selectors.setin import Selectors
 from core.base_scraper import BaseScraper
-from core.config import CSV_HEADERS, TIMEOUT_LONG
+from core.config import CSV_HEADERS, TIMEOUT_LONG, TIMEOUT_PAGE_LOAD
 from core.logger import log_exception
 from core.utils import clean_text, normalize_price
 
@@ -155,6 +155,22 @@ class SetinProductScraper(BaseScraper):
             Liste des URLs de sous-catégories de niveau 3.
         """
         categories: list[str] = []
+
+        # Le menu est injecté par un POST /ajax/load_page.php qui arrive APRÈS le
+        # load de la page (~1 s). Sans cette attente explicite, `.all()` — qui,
+        # contrairement à `.click()`, n'attend rien — renvoie 0 et tout le run se
+        # termine sur 0 produit sans la moindre erreur.
+        try:
+            await page.wait_for_selector(
+                Selectors.category_menu_root, state="attached", timeout=TIMEOUT_PAGE_LOAD
+            )
+        except PlaywrightTimeout:
+            self.log.warning(
+                "Menu catégories absent après %d ms (%s) — run probablement vide",
+                TIMEOUT_PAGE_LOAD,
+                Selectors.category_menu_root,
+            )
+
         await page.locator(Selectors.menu_products).click()
 
         selector_lvl1 = Selectors.category_level1.format(category=category_name)
