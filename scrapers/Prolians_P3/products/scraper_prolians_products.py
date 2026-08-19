@@ -487,7 +487,12 @@ def extract_product_from_dom(page):
                 if _decli_refs:
                     if not data["product_parent_reference"]:
                         data["product_parent_reference"] = _decli_refs[0]
-                    full_child_refs = "||".join(dict.fromkeys(_decli_refs))
+                    full_child_refs = "||".join(
+                        dict.fromkeys([
+                            data["product_parent_reference"],
+                            *_decli_refs,
+                        ])
+                    )
             else:
                 # Pas de bouton radio → construit les déclinaisons depuis les refs de page
                 declinaisons = [
@@ -504,6 +509,13 @@ def extract_product_from_dom(page):
                     }
                     for r in _all_prolians_refs
                 ]
+
+                full_child_refs = "||".join(
+                    dict.fromkeys([
+                        data["product_parent_reference"],
+                        *_all_prolians_refs,
+                    ])
+                )
 
             for decli in declinaisons:
                 row = dict(data)
