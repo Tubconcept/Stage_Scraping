@@ -365,6 +365,7 @@ def _build_combo_row(base_row: dict, combo, headers: list, child_refs_str: str, 
     ref_td = clean_fn(tds[0].text)
     if ref_td:
         row["productRef"] = ref_td
+        row["Ref_fabricant"] = ref_td
     decli_parts: List[str] = []
     for h, td in zip(headers[1:], tds[1:]):
         val = td.text.replace("\xa0", " ").replace("\n", " ").replace("\r", "").replace("\t", " ")
