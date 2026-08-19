@@ -61,7 +61,7 @@ COLONNE_UID = "product_uid"
 #: Le premier critère dont la valeur est non vide fournit la clé naturelle.
 CRITERES_PAR_SITE: dict[str, tuple[str, ...]] = {
     "legallais": ("url",),          # réf. contaminée par la réf. parente
-    "prolians":  ("url",),
+    "prolians":  ("ref", "url"),  # refs fiables par variante, URL en repli
     "setin":     ("url",),          # la variante est dans ?idvar= → conservée
     "sider":     ("url",),          # normalisation d'URL = 9 853 doublons purgés
     "sonepar":   ("ref", "url"),    # réf. fiable (désignations 100 % identiques)
