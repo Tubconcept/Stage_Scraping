@@ -36,7 +36,7 @@ import os
 from datetime import datetime
 
 from css_selectors.setin import Selectors
-from core.config import PROFILES_DIR, TIMEOUT_MEDIUM
+from core.config import PROFILES_DIR, TIMEOUT_MEDIUM, TIMEOUT_PAGE_LOAD
 from core.base_scraper import BaseScraper
 from core.logger import log_exception
 from db.mariadb_db import init_site_db, insert_product, get_scraped_product_urls, resolve_decli_index
@@ -73,6 +73,10 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
             self.log.warning("User_P5 ou Password_P5 non défini dans .env")
         self._csv_path: Path | None = None  # Compat GUI — export CSV à la demande uniquement
         self._db_conn = None  # connexion MariaDB (sentinel), initialisée dans run()
+        # Compteur porté par l'instance : un compteur local à run() reste à 0 si une
+        # exception interrompt le mode, et le run annonce alors « 0 produit » alors
+        # que des lignes SONT en base — exactement le symptôme qui fait croire à un échec.
+        self._rows_written = 0
         # Mode « dates » : les URLs viennent des commandes, pas du menu catalogue
         self._use_order_dates = date_from is not None and date_to is not None
         if self._use_order_dates:
@@ -122,6 +126,7 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
         cat1, cat2, cat3 = await self._ariane(page)
         for produit in products:
             self._persist_product(produit, cat1, cat2, cat3, link)
+        self._rows_written += len(products)
         return len(products)
 
     async def _ensure_session(self, page, storage_path) -> None:
@@ -225,8 +230,14 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
         limit_products: int | None, rows_written: int,
     ) -> int:
         """Traite une catégorie (redirection directe ou pagination tranche par tranche). Retourne le total cumulatif."""
-        await page.goto(cat_url)
-        await page.wait_for_load_state("domcontentloaded")
+        # `wait_until="load"` (défaut) attend jusqu'aux images : les pages Setin
+        # dépassent régulièrement les 30 s. Une catégorie injoignable est journalisée
+        # et sautée — sans ce garde-fou elle emportait les 35 autres avec elle.
+        try:
+            await page.goto(cat_url, wait_until="domcontentloaded", timeout=TIMEOUT_PAGE_LOAD)
+        except Exception as exc:
+            log_exception(self.log, exc, f"Catégorie {cat_url} — sautée")
+            return rows_written
 
         if page.url != cat_url:
             link = page.url
@@ -279,15 +290,14 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
 
         await self.start_browser(headless=False, storage_state=storage_state)
         page = await self.new_page()
-        rows_written = 0
 
         try:
             await self._ensure_session(page, storage_path)
             seen = self._load_seen_urls()
             if self._use_order_dates:
-                rows_written = await self._run_date_mode(page, seen, limit_products)
+                await self._run_date_mode(page, seen, limit_products)
             else:
-                rows_written = await self._run_catalogue_mode(page, seen, limit_products)
+                await self._run_catalogue_mode(page, seen, limit_products)
         except Exception as exc:
             log_exception(self.log, exc, "run() setin_products")
         finally:
@@ -299,7 +309,7 @@ class SetinProductScraper(_SetinCSS, _OrderCSS):
                 self._db_conn = None
             await self.close()
 
-        self.log.info("Terminé — %d produit(s) enregistré(s) en MariaDB", rows_written)
+        self.log.info("Terminé — %d produit(s) enregistré(s) en MariaDB", self._rows_written)
 
 
 # ─── Factory et CLI ───────────────────────────────────────────────────────────
