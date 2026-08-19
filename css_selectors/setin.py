@@ -57,6 +57,11 @@ class Selectors:
 
     # --- Navigation catalogue ---
     menu_products = "li#menu-produits a.boutonHautLien.d-block"
+    # Racine du menu catégories. Le contenu du menu n'est PAS dans le HTML servi :
+    # il est injecté après coup par un POST /ajax/load_page.php. Il faut donc
+    # l'attendre (state="attached" — il reste masqué tant qu'on ne survole pas
+    # « Produits ») avant de compter quoi que ce soit.
+    category_menu_root = "ul.category_niv1"
     category_level1 = 'ul.category_niv1 li[aria-label="{category}"] a'
     category_level2 = "ul.category_niv2.active a"
     category_level3 = "ul.category_niv3.active li:not(.voir_tout_souscategorie) a"
