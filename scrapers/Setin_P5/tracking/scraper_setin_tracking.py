@@ -255,11 +255,15 @@ class SetinTrackingScraper(BaseScraper):
             return None, None, None
 
         tracking_url = (await tracking_loc.first.get_attribute("href")) or ""
-        if not tracking_url or tracking_url == "0":
+        tracking_url = tracking_url.strip()
+        if not tracking_url or tracking_url == "0" or tracking_url == "#":
+            return None, None, None
+        lowered_url = tracking_url.lower()
+        if lowered_url.startswith("javascript:") or lowered_url.startswith("mailto:"):
             return None, None, None
 
         carrier_exp, tracking_exp = _detect_carrier(tracking_url)
-        if not tracking_exp:
+        if not tracking_exp and tracking_url.startswith(("http://", "https://")):
             tracking_exp = await self._extract_tracking_number_from_page(page, tracking_url)
         if carrier_exp == "Inconnu":
             self.log.warning("Transporteur inconnu — %s : %s", id_cmd, tracking_url)
