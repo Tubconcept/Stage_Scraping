@@ -18,23 +18,43 @@ Sources exploitées :
   - liens ``…​.pdf`` (directs ou ``javascript:window.open``) → documents
   - JSON-LD ``BreadcrumbList`` → fil d'Ariane
 
-**Codes article** : quand la fiche est récupérée **authentifiée**, la table des
-références est rendue côté serveur pour environ deux tiers des fiches — chaque
-ligne porte ``data-article-code``. ``articles_codes`` les extrait ; ce sont les
-clés de l'enrichissement prix. Le tiers restant (fiches « gamme » à sélection de
-caractéristiques) ne rend rien en statique : seule la base page est émise.
+**Articles (déclinaisons)** : la fiche embarque la liste **JSON** de tous ses
+articles dans l'attribut Stimulus ``data-pages--product-articles-value``, servie
+**même sans session**. Chaque entrée porte ce qui est PROPRE à l'article — son
+code, sa désignation, son image, ses axes de déclinaison (``caracsSpe``) et
+surtout sa **référence fabricant** (``codeProvider``). ``fiche_et_articles``
+émet un extrait par article ; ``articles_codes`` (table HTML) ne sert plus que
+de garde-fou si l'attribut venait à disparaître.
+
+⚠️ **La réf. fabricant du DOM est celle d'UN article, pas de la gamme.** La ligne
+``tr#characCodeProvider`` de ``#characteristicsTable`` (rendue seulement en
+authentifié) porte la référence de l'article surligné du tableau — qui n'est même
+pas forcément celui de l'URL demandée. Mesuré le 20/08/2026 sur la gamme 16603 :
+le DOM annonce ``G2F23010`` (article 588039) sur l'URL de l'article 782790, dont
+la vraie référence fabricant est ``F23080``. Recopiée telle quelle sur les 12
+articles, elle était donc fausse **partout, y compris sur l'article de la page**.
+Elle ne sert plus qu'aux fiches mono-article, où elle est sans ambiguïté.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
 from core.texte import nettoyer_texte, normaliser_prix
 
-from .legallais_sitemap import ref_depuis_url
+from .legallais_sitemap import BASE_URL, ref_depuis_url
+
+#: Attribut Stimulus portant la liste JSON des articles de la gamme.
+ATTR_ARTICLES = "data-pages--product-articles-value"
+
+#: États d'article publiés par Legallais. ``replaced`` = remplacé par un nouveau
+#: modèle : la fiche reste consultable, l'article n'est plus commandable.
+ETAT_PUBLIE = "published"
+ETAT_REMPLACE = "replaced"
 
 # Domaine du logo Legallais dans les og:image (à écarter : pas la photo produit).
 _OG_IMAGE_LOGO = "og-legallais-logo"
@@ -231,7 +251,11 @@ def parser_fiche(html: str, url: str) -> dict:
     ``prix`` et ``stock`` restent vides ici : ils viennent de l'enrichissement.
     La référence est l'id de page.
     """
-    soup = BeautifulSoup(html, "html.parser")
+    return _fiche(BeautifulSoup(html, "html.parser"), url)
+
+
+def _fiche(soup: BeautifulSoup, url: str) -> dict:
+    """Base **page** (niveau gamme) depuis une soupe déjà construite. **Pur**."""
     attributs = _attributs(soup)
     return {
         "url": url,
@@ -251,6 +275,143 @@ def parser_fiche(html: str, url: str) -> dict:
         "docs": _docs(soup),
         "attributs": attributs,
     }
+
+
+def _articles_json(soup: BeautifulSoup) -> list[dict]:
+    """Liste JSON des articles de la gamme, ou ``[]``. **Pur**."""
+    balise = soup.find(attrs={ATTR_ARTICLES: True})
+    if balise is None:
+        return []
+    try:
+        articles = json.loads(balise.get(ATTR_ARTICLES) or "")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(articles, list):
+        return []
+    return [a for a in articles if isinstance(a, dict) and a.get("code")]
+
+
+def url_article(url_page: str, code: str) -> str:
+    """URL de page + code article → URL de l'article. **Pur**.
+
+    C'est ce qui donne à chaque déclinaison une identité ``product_uid`` distincte
+    (l'identité Legallais est l'URL, cf. ``core.dedup.CRITERES_PAR_SITE``) : sans
+    elle, les articles d'une même gamme s'écrasent mutuellement en base.
+
+    Le sitemap énumère des URL de **gamme** (``/produit/<slug>/<id>``) : on ajoute
+    alors le code. Une URL d'**article** (``…/<gamme>/<code>``) voit son dernier
+    segment remplacé, jamais empilé.
+    """
+    if not code:
+        return url_page
+    morceaux = urlsplit(url_page)
+    segments = [s for s in morceaux.path.split("/") if s]
+    if len(segments) >= 4 and segments[-1].isdigit() and segments[-2].isdigit():
+        segments[-1] = code
+    else:
+        segments.append(code)
+    return urlunsplit((morceaux.scheme, morceaux.netloc, "/" + "/".join(segments), "", ""))
+
+
+def _url_article(article: dict, url_page: str) -> str:
+    """URL de l'article : ``link`` de la gamme + code, repli sur l'URL de page. **Pur**."""
+    lien = article.get("link") or ""
+    if not lien:
+        return url_article(url_page, article["code"])
+    base = lien if lien.startswith("http") else f"{BASE_URL}{lien}"
+    return f"{base.rstrip('/')}/{article['code']}"
+
+
+def _url_media(chemin: object) -> str:
+    """Chemin de média → URL absolue, ``""`` si vide. **Pur**."""
+    propre = nettoyer_texte(chemin)
+    if not propre or propre.startswith("http"):
+        return propre
+    return f"{BASE_URL}{propre if propre.startswith('/') else '/' + propre}"
+
+
+def _categories_article(article: dict) -> list[str]:
+    """``universe > family > subFamily`` de l'article. **Pur**."""
+    arbre = article.get("categories")
+    if not isinstance(arbre, dict):
+        return []
+    niveaux = (arbre.get("universe"), arbre.get("family"), arbre.get("subFamily"))
+    return [
+        nettoyer_texte(n.get("title"))
+        for n in niveaux
+        if isinstance(n, dict) and nettoyer_texte(n.get("title"))
+    ]
+
+
+def _caracs(article: dict, cle: str) -> dict[str, str]:
+    """``caracsCommune`` ou ``caracsSpe`` nettoyées. **Pur**."""
+    brut = article.get(cle)
+    if not isinstance(brut, dict):
+        return {}
+    propres = {}
+    for label, valeur in brut.items():
+        nom, val = nettoyer_texte(label), nettoyer_texte(valeur)
+        if nom and val:
+            propres[nom] = val
+    return propres
+
+
+def _article_extrait(article: dict, base: dict, url_page: str, *, seul: bool) -> dict:
+    """Un article de la gamme → extrait ``core.f2.element_produit``. **Pur**.
+
+    La base page fournit le fond (description, docs, conditionnement, éco-taxe) ;
+    l'article a le dernier mot sur tout ce qui lui est propre.
+
+    ``prix`` reste **volontairement vide** : le JSON porte ``base_price``, qui est
+    le prix **public** quand la fiche est servie sans session. L'écrire ici ferait
+    écraser, à la première passe nologin, le prix compte déjà en base. Le prix
+    continue donc de venir du seul ``/get-article-infos`` (cf.
+    ``legallais_article_infos``).
+    """
+    axes = _caracs(article, "caracsSpe")
+    extrait = dict(base)
+    extrait.update({
+        "url": _url_article(article, url_page),
+        "ref": str(article["code"]),
+        "ref_fabricant": nettoyer_texte(article.get("codeProvider")),
+        "designation": nettoyer_texte(article.get("title")) or base.get("designation", ""),
+        "prix": "",
+        "marque": nettoyer_texte(article.get("brandTitle")) or base.get("marque", ""),
+        "categories": _categories_article(article) or base.get("categories", []),
+        "attributs": {**base.get("attributs", {}), **_caracs(article, "caracsCommune"), **axes},
+        # Toujours renseigné, jamais vide : ``save_product`` ne remplace pas une
+        # valeur en base par du vide, donc un « replaced » ne s'effacerait plus
+        # jamais si l'article redevenait publié.
+        "statut": nettoyer_texte(article.get("state")) or ETAT_PUBLIE,
+    })
+    logo = _url_media(article.get("brandLogo"))
+    if logo:
+        extrait["marque_logo"] = logo
+    image = _url_media(article.get("imageUrl"))
+    if image:
+        extrait["images"] = [image]
+    if not seul:
+        # ⚠️ L'EAN du DOM est celui de la page, donc d'UN article : le recopier sur
+        # une gamme de 12 déclinaisons donnerait 12 articles au même code-barres,
+        # et l'EAN est une clé de rapprochement côté PIM. Le JSON n'en fournit pas
+        # par article → on préfère aucun EAN à un EAN faux.
+        extrait["ean"] = ""
+    return extrait
+
+
+def fiche_et_articles(html: str, url: str) -> tuple[dict, list[dict]]:
+    """HTML → ``(base page, un extrait par article)``, en **un seul** parsing. **Pur**.
+
+    Liste d'articles vide quand la fiche n'en publie aucun (gamme dont la
+    commercialisation est arrêtée, ou attribut absent) : l'appelant émet alors la
+    base page seule. Un parsing unique, car la fiche pèse ~800 Ko et la voie
+    sitemap en traite ~48 000.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    base = _fiche(soup, url)
+    articles = _articles_json(soup)
+    seul = len(articles) == 1
+    return base, [_article_extrait(a, base, url, seul=seul) for a in articles]
 
 
 def articles_codes(html: str) -> list[str]:

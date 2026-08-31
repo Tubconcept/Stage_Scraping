@@ -50,13 +50,18 @@ def _categories(result: dict, base: dict) -> list[str]:
 
 
 def mapper_article(result: dict, base: dict, *, stock: str = "") -> dict:
-    """Base page + infos article → extrait pour ``core.f2.element_produit``. **Pur**.
+    """Extrait d'article + infos article → extrait pour ``core.f2.element_produit``. **Pur**.
 
     L'article est l'**unité vendable** : sa référence est le **code** article, et
     sa désignation comme son prix priment sur ceux de la page (niveau gamme). On
     conserve de la page l'image et le fil d'Ariane. L'URL devient celle de
     l'article quand le slug est fourni — c'est ce qui donne à chaque article une
     identité ``product_uid`` distincte.
+
+    ⚠️ ``base`` est l'extrait **de l'article** produit par
+    ``legallais_fiche_html.fiche_et_articles``, pas la base page : c'est lui qui
+    porte la **référence fabricant** de la déclinaison, que cet endpoint ne
+    renvoie pas et qu'on ne doit donc jamais écraser ici.
     """
     extrait = dict(base)  # image + catégories de la page repris tels quels
     extrait["ref"] = str(result.get("code") or "")

@@ -11,7 +11,7 @@ Couvre les parties **pures** — celles où une régression est silencieuse :
   core/methodes     — résolution des méthodes et validation des paramètres
   Prolians          — mapping GraphQL (fiche riche + prix), découpe des lots
   Setin             — sitemap, variables JS inline, tarifs, montants
-  Legallais         — sitemap, fiche HTML, codes article, mapping prix
+  Legallais         — sitemap, fiche HTML, articles (déclinaisons), mapping prix
 
 Le **live** (réseau, navigateur) n'est pas couvert : il se valide en lançant
 l'app.
@@ -890,6 +890,56 @@ _HTML_LEGALLAIS = """
 """
 
 
+# Articles d'une gamme tels que Legallais les embarque dans son JSON inline —
+# forme relevée le 20/08/2026 sur la gamme 16603 (champs utiles seulement).
+_ARTICLE_1 = {
+    "code": "588039", "codeProvider": "G2F23010", "state": "published",
+    "title": "Coude 16-16 G2F23010", "link": "/produit/coude/16603",
+    "productCode": "P119968", "brandTitle": "MULTITUBO",
+    "brandLogo": "/media_fr/brands/multitubo.svg",
+    "imageUrl": "https://cdn.legallais.com/588039.jpg",
+    "base_price": 7.25, "priceLevels": [{"quantity": 1, "net_price": 7.25}],
+    "caracsCommune": {"Matière": "Laiton"}, "caracsSpe": {"Diamètre (mm)": "16"},
+    "categories": {"universe": {"title": "PLOMBERIE"}, "family": {"title": "Raccords"},
+                   "subFamily": {"title": "Multicouche"}},
+}
+_ARTICLE_2 = {**_ARTICLE_1, "code": "588046", "codeProvider": "G2F23030",
+              "title": "Coude 20-20 G2F23030", "caracsSpe": {"Diamètre (mm)": "20"},
+              "imageUrl": "https://cdn.legallais.com/588046.jpg"}
+_ARTICLE_3 = {**_ARTICLE_1, "code": "782784", "codeProvider": "F23010",
+              "state": "replaced", "title": "Coude 16-16 23010",
+              "caracsSpe": {"Diamètre (mm)": "16", "Modèle": "Ancien modèle"}}
+_ARTICLES = [_ARTICLE_1, _ARTICLE_2, _ARTICLE_3]
+
+# Fiche de gamme : mêmes champs de page que _HTML_LEGALLAIS + le JSON des articles.
+# La page n'annonce QU'UNE référence fournisseur — celle qui contaminait tout.
+_GABARIT_DECLI = """
+<meta property="og:title" content="Coude égal à sertir">
+<meta itemprop="description" content="Un embout de vissage">
+<div itemprop="brand"><meta itemprop="name" content="MULTITUBO SYSTEMS"></div>
+<span class="code_ean"><span class="code_ean_value">3660000000001</span></span>
+<table id="characteristicsTable">
+  <tr><th>Unité de vente</th><td>Boîte de 10</td></tr>
+  <tr id="characCodeProvider"><th>Référence fournisseur</th><td>G2F23010</td></tr>
+</table>
+<a href="javascript:window.open('https://doc/fiche.pdf')">PDF</a>
+<div data-controller="pages--product" data-pages--product-articles-value="@@ARTICLES@@"></div>
+"""
+
+
+def _html_declinaisons(articles) -> str:
+    """Fiche de gamme portant ``articles`` dans son attribut Stimulus.
+
+    Le JSON y est **échappé en entités HTML**, comme sur le site : c'est ce que
+    BeautifulSoup doit désérialiser à la lecture de l'attribut.
+    """
+    brut = articles if isinstance(articles, str) else json.dumps(articles, ensure_ascii=False)
+    return _GABARIT_DECLI.replace("@@ARTICLES@@", brut.replace('"', "&quot;"))
+
+
+_HTML_DECLI = _html_declinaisons(_ARTICLES)
+
+
 class TestLegallais:
 
     def test_classer_index(self):
@@ -922,6 +972,13 @@ class TestLegallais:
         chemin = tmp_path / "session.json"
         assert storage_state_a_amorcer(True, True, chemin) == chemin
         assert storage_state_a_amorcer(True, False, chemin) is None
+
+    def test_prix_jamais_enrichi_sans_session(self):
+        """Anonyme, ``/get-article-infos`` rend le prix PUBLIC : il écraserait le tarif compte."""
+        from scrapers.Legallais_P1.products.methode_sitemap import doit_enrichir_prix
+        assert doit_enrichir_prix(True, True) is True
+        assert doit_enrichir_prix(True, False) is False
+        assert doit_enrichir_prix(False, True) is False
 
     def test_categories_retire_accueil(self):
         from scrapers.Legallais_P1.products.legallais_fiche_html import (
@@ -975,3 +1032,101 @@ class TestLegallais:
         ligne = element_produit(extrait, "P1")
         assert colonnes_inconnues(ligne) == set()
         assert not COLONNES_DECLINAISON & set(ligne)
+
+
+class TestLegallaisDeclinaisons:
+    """Chaque article de la gamme porte SA référence fabricant, pas celle de la page."""
+
+    URL = "https://www.legallais.com/produit/coude/16603"
+
+    def _articles(self, html=None):
+        from scrapers.Legallais_P1.products.legallais_fiche_html import fiche_et_articles
+        return fiche_et_articles(html or _HTML_DECLI, self.URL)
+
+    def test_une_ligne_par_article(self):
+        _, articles = self._articles()
+        assert [a["ref"] for a in articles] == ["588039", "588046", "782784"]
+
+    def test_reference_fabricant_propre_a_chaque_article(self):
+        """Le cœur du correctif : trois articles, trois références fabricant."""
+        base, articles = self._articles()
+        assert base["ref_fabricant"] == "G2F23010"  # la page n'en annonce qu'une…
+        assert [a["ref_fabricant"] for a in articles] == ["G2F23010", "G2F23030", "F23010"]
+
+    def test_url_distincte_par_article(self):
+        """Sans URL propre, les déclinaisons partageraient un seul product_uid."""
+        _, articles = self._articles()
+        urls = [a["url"] for a in articles]
+        assert urls[0] == "https://www.legallais.com/produit/coude/16603/588039"
+        assert len(set(urls)) == 3
+
+    def test_axes_de_declinaison_dans_les_attributs(self):
+        _, articles = self._articles()
+        assert articles[0]["attributs"]["Diamètre (mm)"] == "16"
+        assert articles[1]["attributs"]["Diamètre (mm)"] == "20"
+        # Les caractéristiques de gamme restent partagées.
+        assert articles[0]["attributs"]["Matière"] == "Laiton"
+        assert articles[0]["attributs"]["Unité de vente"] == "Boîte de 10"
+
+    def test_statut_replaced_conserve(self):
+        _, articles = self._articles()
+        assert [a["statut"] for a in articles] == ["published", "published", "replaced"]
+        assert element_produit(articles[2], "P1")["product_status"] == "replaced"
+
+    def test_statut_toujours_renseigne(self):
+        """Un statut vide ne remplacerait jamais un « replaced » déjà en base."""
+        muets = [{**a, "state": ""} for a in _ARTICLES]
+        _, articles = self._articles(_html_declinaisons(muets))
+        assert all(a["statut"] == "published" for a in articles)
+
+    def test_ean_page_non_recopie_sur_les_declinaisons(self):
+        """L'EAN de la page est celui d'UN article : 3 articles au même EAN = faux."""
+        _, articles = self._articles()
+        assert all(a["ean"] == "" for a in articles)
+
+    def test_ean_page_conserve_si_article_unique(self):
+        _, articles = self._articles(_html_declinaisons([_ARTICLE_1]))
+        assert len(articles) == 1
+        assert articles[0]["ean"] == "3660000000001"
+
+    def test_prix_jamais_pris_dans_le_json(self):
+        """base_price est le prix PUBLIC hors session : il écraserait le prix compte."""
+        _, articles = self._articles()
+        assert all(a["prix"] == "" for a in articles)
+
+    def test_champs_de_page_conserves(self):
+        _, articles = self._articles()
+        assert articles[0]["description"] == "Un embout de vissage"
+        assert articles[0]["docs"] == ["https://doc/fiche.pdf"]
+        assert articles[0]["conditionnement"] == "Boîte de 10"
+
+    def test_article_prime_sur_la_page(self):
+        _, articles = self._articles()
+        assert articles[0]["designation"] == "Coude 16-16 G2F23010"
+        assert articles[0]["marque"] == "MULTITUBO"
+        assert articles[0]["images"] == ["https://cdn.legallais.com/588039.jpg"]
+        assert articles[0]["categories"] == ["PLOMBERIE", "Raccords", "Multicouche"]
+
+    def test_fiche_sans_article(self):
+        """Gamme dont la commercialisation est arrêtée : base page seule."""
+        base, articles = self._articles(_HTML_LEGALLAIS)
+        assert articles == []
+        assert base["ref"] == "16603"
+
+    def test_json_illisible_ne_casse_pas_la_fiche(self):
+        _, articles = self._articles(_html_declinaisons("{pas du json"))
+        assert articles == []
+
+    def test_ligne_produit_valide(self):
+        _, articles = self._articles()
+        ligne = element_produit(articles[0], "P1")
+        assert colonnes_inconnues(ligne) == set()
+        assert not COLONNES_DECLINAISON & set(ligne)
+        assert ligne["product_reference_fabricant"] == "G2F23010"
+
+    def test_url_article_remplace_le_dernier_segment(self):
+        """Une URL d'article ne doit pas empiler un second code."""
+        from scrapers.Legallais_P1.products.legallais_fiche_html import url_article
+        gamme = "https://www.legallais.com/produit/coude/16603"
+        assert url_article(gamme, "588039") == f"{gamme}/588039"
+        assert url_article(f"{gamme}/782790", "588039") == f"{gamme}/588039"

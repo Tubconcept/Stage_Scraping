@@ -12,6 +12,13 @@ Architecture :
     - scraper_legallais_products.py (ce fichier) = couche CSS / extraction.
     - scrap_legallais_products.py = orchestrateur (phases collecte + scrape, SQLite).
     Sélecteurs dans selectors/legallais.py ; session via cookie_manager_legallais.
+
+⚠️ **Déclinaisons : la référence fabricant vient du JSON, pas du DOM.** La page
+embarque ``data-pages--product-articles-value``, liste de tous les articles de la
+gamme, chacun avec sa ``codeProvider``. Le DOM (``tr#characCodeProvider``) n'en
+affiche qu'UNE pour toute la page — celle de la ligne surlignée du tableau, pas
+même forcément celle de l'article de l'URL. Recopiée sur chaque déclinaison, elle
+était fausse partout ; ``_articles_par_code`` la remplace ligne par ligne.
 """
 
 import sys
@@ -22,6 +29,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+import json
 import os
 import re
 from typing import List, Dict, Optional, Tuple
@@ -140,6 +148,16 @@ _ECO_LABELS_JS = """
         }
     }
     return results;
+"""
+
+_ARTICLES_JSON_JS = """
+    const el = document.querySelector('[data-pages--product-articles-value]');
+    return el ? el.getAttribute('data-pages--product-articles-value') : '';
+"""
+
+_ARTICLE_SELECTIONNE_JS = """
+    const el = document.querySelector('[data-pages--product-article-selected-value]');
+    return el ? el.getAttribute('data-pages--product-article-selected-value') : '';
 """
 
 _CONDITIONNEMENT_JS = """
@@ -340,6 +358,73 @@ def _get_combo_headers(d, selectors: dict) -> List[str]:
         return []
 
 
+def _articles_par_code(d) -> Dict[str, dict]:
+    """Articles de la gamme indexés par code, depuis le JSON inline de la page.
+
+    La page embarque ``data-pages--product-articles-value`` : chaque déclinaison y
+    porte sa PROPRE ``codeProvider`` (référence fabricant) et son état. C'est la
+    seule source par article — le DOM, lui, n'affiche qu'une valeur pour toute la
+    page. Dict vide si l'attribut manque (fiche sans article, ou page changée).
+    """
+    try:
+        brut = d.run_js(_ARTICLES_JSON_JS)
+    except Exception:
+        return {}
+    if not brut:
+        return {}
+    try:
+        articles = json.loads(brut)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(articles, list):
+        return {}
+    return {
+        str(a["code"]): a
+        for a in articles
+        if isinstance(a, dict) and a.get("code")
+    }
+
+
+def _article_selectionne(d) -> str:
+    """Code de l'article affiché par la page (``article-selected-value``), ou ''."""
+    try:
+        brut = d.run_js(_ARTICLE_SELECTIONNE_JS)
+        codes = json.loads(brut) if brut else []
+    except Exception:
+        return ""
+    return str(codes[0]) if isinstance(codes, list) and codes else ""
+
+
+def _article_pour(articles: Dict[str, dict], code: str) -> Optional[dict]:
+    """Article correspondant au code, ``{}`` si introuvable, ``None`` sans JSON.
+
+    Repli sur l'unique article quand la gamme n'en a qu'un : le code lu dans le
+    DOM (``div.c-reference``) peut différer du code JSON sans que l'article, lui,
+    soit ambigu. Sur une gamme à déclinaisons, aucun repli : un code non retrouvé
+    doit rester sans référence fabricant plutôt que d'hériter de celle d'un voisin.
+    """
+    if not articles:
+        return None
+    trouve = articles.get(str(code))
+    if trouve is not None:
+        return trouve
+    return next(iter(articles.values())) if len(articles) == 1 else {}
+
+
+def _appliquer_article(row: dict, article: Optional[dict]) -> None:
+    """Pose sur ``row`` la référence fabricant et l'état PROPRES à l'article.
+
+    Quand la page publie ses articles, le JSON fait autorité : une déclinaison
+    sans ``codeProvider`` reçoit une référence **vide** plutôt que celle de la
+    page, qui n'est celle d'aucun article en particulier. ``None`` (attribut
+    absent) laisse la ligne intacte : la valeur DOM déjà en place est conservée.
+    """
+    if article is None:
+        return
+    row["Ref_fabricant"] = str(article.get("codeProvider") or "").strip()
+    row["productStatus"] = str(article.get("state") or "").strip()
+
+
 def _set_child_refs(base_row: dict, combo_rows: list, clean_fn) -> None:
     """Collect all child refs from combo_rows and store in base_row['childRefs']."""
     all_child_refs = [base_row["productRef"]] if base_row["productRef"] else []
@@ -352,8 +437,14 @@ def _set_child_refs(base_row: dict, combo_rows: list, clean_fn) -> None:
     base_row["childRefs"] = "||".join(all_child_refs)
 
 
-def _build_combo_row(base_row: dict, combo, headers: list, child_refs_str: str, clean_fn) -> dict:
-    """Build one combination row dict from a <tr> element."""
+def _build_combo_row(base_row: dict, combo, headers: list, child_refs_str: str, clean_fn,
+                     articles: Optional[Dict[str, dict]] = None) -> dict:
+    """Build one combination row dict from a <tr> element.
+
+    ``articles`` (JSON inline de la page) donne à la déclinaison sa PROPRE
+    référence fabricant et son état ; sans lui, la ligne garderait celle de la
+    page — identique pour les 12 articles d'une gamme, et fausse pour tous.
+    """
     row = dict(base_row)
     row["isCombination"]    = "True"
     row["combinationIndex"] = None
@@ -365,6 +456,7 @@ def _build_combo_row(base_row: dict, combo, headers: list, child_refs_str: str, 
     ref_td = clean_fn(tds[0].text)
     if ref_td:
         row["productRef"] = ref_td
+        _appliquer_article(row, _article_pour(articles or {}, ref_td))
     decli_parts: List[str] = []
     for h, td in zip(headers[1:], tds[1:]):
         val = td.text.replace("\xa0", " ").replace("\n", " ").replace("\r", "").replace("\t", " ")
@@ -378,7 +470,8 @@ def _build_combo_row(base_row: dict, combo, headers: list, child_refs_str: str, 
     return row
 
 
-def _build_rows(d, base_row: dict, selectors: dict, clean_fn) -> List[Dict]:
+def _build_rows(d, base_row: dict, selectors: dict, clean_fn,
+                articles: Optional[Dict[str, dict]] = None) -> List[Dict]:
     """Return product rows: one base row, or one per combination."""
     try:
         combo_rows = d.select_all(selectors["combinations_table"], 1)
@@ -388,8 +481,15 @@ def _build_rows(d, base_row: dict, selectors: dict, clean_fn) -> List[Dict]:
             return [base_row]
         headers = _get_combo_headers(d, selectors)
         _set_child_refs(base_row, combo_rows, clean_fn)
-        return [_build_combo_row(base_row, c, headers, base_row["childRefs"], clean_fn)
+        rows = [_build_combo_row(base_row, c, headers, base_row["childRefs"], clean_fn, articles)
                 for c in combo_rows]
+        if len(rows) > 1:
+            # ⚠️ L'EAN du DOM est celui de la page, donc d'UN article : le laisser
+            # donnerait le même code-barres à toutes les déclinaisons, alors qu'il
+            # sert de clé de rapprochement côté PIM. Aucun EAN plutôt qu'un faux.
+            for row in rows:
+                row["EAN"] = ""
+        return rows
     except Exception:
         base_row["isCombination"] = "False"
         base_row["combinationIndex"] = ""
@@ -575,6 +675,8 @@ class LegallaisScraper:
         from core.utils import clean_text
         d = self._driver
         product_ref = _extract_product_ref(d, SELECTORS)
+        # Articles de la gamme : source par déclinaison de la référence fabricant.
+        articles = _articles_par_code(d)
         base_row = {
             "productRef":        product_ref,
             "productTitle":      _extract_text(d, SELECTORS["product_title"], clean_text),
@@ -597,4 +699,8 @@ class LegallaisScraper:
             "childRefs":         product_ref,
             "crossSell":         "||".join(_extract_cross_sell(d)),
         }
-        return _build_rows(d, base_row, SELECTORS, clean_text)
+        # Fiche mono-article : la réf. fabricant du DOM est sans ambiguïté, mais le
+        # JSON reste préféré quand il porte l'article affiché (le DOM peut montrer
+        # la référence d'une AUTRE ligne du tableau que celle de l'URL).
+        _appliquer_article(base_row, _article_pour(articles, _article_selectionne(d) or product_ref))
+        return _build_rows(d, base_row, SELECTORS, clean_text, articles)

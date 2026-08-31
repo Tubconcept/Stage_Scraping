@@ -8,16 +8,17 @@ Voie rapide face au parcours par référence (une fiche à la fois, rendu Chrome
 2. **Fetch concurrent poli** — chaque fiche est récupérée en **HTTP** via
    l'``APIRequestContext`` Playwright (session rejouée), **sans ouvrir de page** :
    jitter + back-off, pour ne pas déclencher de blocage IP sur le CDN.
-3. **Parse statique** — ``legallais_fiche_html.parser_fiche`` lit désignation,
-   marque, images, description, caractéristiques, EAN, docs, fil d'Ariane.
-4. **Enrichissement prix** — la fiche récupérée **authentifiée** rend la table des
-   références côté serveur : ``articles_codes`` en extrait les codes article, et
-   ``/get-article-infos/<code>`` donne le **prix net compte**. On émet alors
-   **une ligne par article** (l'unité vendable).
+3. **Parse statique** — ``legallais_fiche_html.fiche_et_articles`` lit la base
+   page (désignation, description, docs, fil d'Ariane) **et le JSON inline des
+   articles** : un extrait par déclinaison, chacun avec sa référence, sa
+   **référence fabricant** (``codeProvider``), ses axes et son état.
+4. **Enrichissement prix** — ``/get-article-infos/<code>`` donne le **prix net
+   compte** de chaque article déjà identifié. On émet **une ligne par article**
+   (l'unité vendable), déclinaisons comprises.
 
-⚠️ **Cette voie ne remplace pas le parcours par catégories.** Les fiches
-« gamme » chargent leur tableau en JS et ne rendent aucun code en statique : elles
-ne produisent que leur base page (sans prix). C'est une passe d'enrichissement
+⚠️ **Cette voie ne remplace pas le parcours par catégories.** Une part des fiches
+ne publie aucun article (gamme dont la commercialisation est arrêtée) : elles ne
+produisent que leur base page, sans prix. C'est une passe d'enrichissement
 rapide, à combiner avec la voie historique.
 
 ⚠️ **Dualité nologin / logué.** Le catalogue diffère selon l'état de connexion :
@@ -49,7 +50,7 @@ from core.sessions import GestionnaireSessions
 
 from . import legallais_sitemap
 from .legallais_article_infos import mapper_article, recuperer_article
-from .legallais_fiche_html import articles_codes, parser_fiche
+from .legallais_fiche_html import articles_codes, fiche_et_articles, url_article
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +92,17 @@ def storage_state_a_amorcer(utiliser_session: bool, session_existe: bool,
     return chemin if session_existe else None
 
 
+def doit_enrichir_prix(enrichir: bool, session_amorcee: bool) -> bool:
+    """Faut-il appeler l'endpoint prix ? **Pur**.
+
+    ⚠️ **Jamais sans session.** ``/get-article-infos`` répond aussi en anonyme,
+    mais son ``net_price`` vaut alors le prix **public** — qui écraserait en base
+    le prix compte déjà collecté. Un prix manquant se rattrape à la passe
+    suivante ; un tarif public pris pour un tarif négocié, non.
+    """
+    return enrichir and session_amorcee
+
+
 def taille_a_traiter(taille_lot: int, faites: int, limit: int | None) -> int:
     """Combien d'entrées du lot traiter sans dépasser ``limit`` (en fiches). **Pur**."""
     if limit is None:
@@ -107,6 +119,8 @@ class LegallaisSitemap(PlaywrightScraper):
 
     def __init__(self, parametres: ParamsLegallaisSitemap | None = None, **kw) -> None:
         super().__init__(parametres or ParamsLegallaisSitemap(), **kw)
+        #: Une session a-t-elle réellement été amorcée ? Pilote l'accès au prix.
+        self.session_amorcee = False
 
     async def _demarrer_avec_session(self) -> None:
         """Amorce le navigateur avec (ou sans) la session, selon le mode de passe."""
@@ -114,10 +128,12 @@ class LegallaisSitemap(PlaywrightScraper):
         storage_state = storage_state_a_amorcer(
             self.parametres.utiliser_session, chemin.exists(), chemin
         )
+        self.session_amorcee = storage_state is not None
         if storage_state is None and self.parametres.utiliser_session:
             _log.warning(
-                "Session Legallais absente — fiches publiques, sans prix compte. "
-                "Se connecter via auth/legallais/manual_login_legallais.py."
+                "Session Legallais absente — fiches publiques, PRIX NON COLLECTÉS "
+                "(le tarif servi en anonyme est le prix public, il écraserait le "
+                "prix compte). Se connecter via auth/legallais/manual_login_legallais.py."
             )
         elif storage_state is None:
             _log.info("Passe nologin : session ignorée (catalogue public, sans prix).")
@@ -220,11 +236,14 @@ class LegallaisSitemap(PlaywrightScraper):
 
     async def _traiter_fiche(self, entree: dict, entetes: dict[str, str],
                              semaphore: asyncio.Semaphore) -> list[dict]:
-        """Une fiche → lignes produit (une par article enrichi, sinon la base page).
+        """Une fiche → une ligne par **article**, sinon la base page.
 
-        Repli sur la base page si l'enrichissement est désactivé, si la fiche
-        n'expose aucun code, ou si tous les appels prix échouent : la fiche n'est
-        jamais perdue.
+        Les articles viennent du JSON inline de la fiche : c'est là, et là seule,
+        que chaque déclinaison porte sa propre référence fabricant. L'appel prix
+        ne fait ensuite que poser le prix compte sur un article déjà identifié.
+
+        Repli sur la base page quand la fiche ne publie aucun article : la fiche
+        n'est jamais perdue.
         """
         url = entree["url"]
         request = self._contexte.request
@@ -237,18 +256,47 @@ class LegallaisSitemap(PlaywrightScraper):
             _log.debug("Fiche non récupérée : %s", url)
             return []
 
-        base = parser_fiche(html, url)
-        codes = articles_codes(html) if self.parametres.enrichir_prix else []
-        if not codes:
+        base, articles = fiche_et_articles(html, url)
+        if not articles:
+            articles = self._repli_table(html, base, url)
+        if not articles:
             return [element_produit(base, FOURNISSEUR)]
+        if not doit_enrichir_prix(self.parametres.enrichir_prix, self.session_amorcee):
+            return [element_produit(article, FOURNISSEUR) for article in articles]
 
         lignes: list[dict] = []
-        for code in codes:
+        for article in articles:
             async with semaphore:
-                result = await recuperer_article(request, code, entetes=entetes)
-            if result:
-                lignes.append(element_produit(mapper_article(result, base), FOURNISSEUR))
-        return lignes or [element_produit(base, FOURNISSEUR)]
+                result = await recuperer_article(request, article["ref"], entetes=entetes)
+            # Sans prix, l'article reste émis : son identité (réf, réf fabricant,
+            # axes) est déjà complète, seul le prix manquera.
+            enrichi = mapper_article(result, article) if result else article
+            lignes.append(element_produit(enrichi, FOURNISSEUR))
+        return lignes
+
+    @staticmethod
+    def _repli_table(html: str, base: dict, url: str) -> list[dict]:
+        """Articles reconstruits depuis la table HTML quand le JSON manque.
+
+        Garde-fou : si Legallais retirait l'attribut ``data-pages--product-articles-value``
+        sans que la table bouge, on continuerait d'émettre un article par ligne —
+        **sans référence fabricant** plutôt qu'avec celle de la page, qui n'est
+        celle d'aucun article en particulier.
+        """
+        codes = articles_codes(html)
+        if not codes:
+            return []
+        _log.warning(
+            "Fiche sans JSON d'articles mais %d ligne(s) de table : %s "
+            "— articles émis sans référence fabricant.", len(codes), url,
+        )
+        # EAN : celui de la page ne vaut que pour une gamme à article unique.
+        ean = base.get("ean", "") if len(codes) == 1 else ""
+        return [
+            {**base, "url": url_article(url, code), "ref": code,
+             "ref_fabricant": "", "ean": ean}
+            for code in codes
+        ]
 
     @staticmethod
     def _resultat(emis: int) -> dict:

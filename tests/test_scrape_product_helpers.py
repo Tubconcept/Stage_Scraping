@@ -6,6 +6,7 @@ Couvre la réduction Cognitive Complexity de 76 → 0 sur scrape_product()
 via extraction de 15 helpers + 5 constantes JS.
 """
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scrapers.Legallais_P1.products.scraper_legallais_products import (
+    _appliquer_article,
+    _article_pour,
+    _articles_par_code,
     _extract_text,
     _extract_product_ref,
     _extract_price,
@@ -400,6 +404,79 @@ class TestSetChildRefs:
         assert base_row["childRefs"] == "101"
 
 
+# ─── Articles de la gamme (JSON inline) ──────────────────────────────────────
+
+_ARTICLES_JSON = json.dumps([
+    {"code": "588039", "codeProvider": "G2F23010", "state": "published"},
+    {"code": "588046", "codeProvider": "G2F23030", "state": "published"},
+    {"code": "782784", "codeProvider": "F23010", "state": "replaced"},
+])
+
+
+class TestArticlesParCode:
+    def test_indexe_par_code(self):
+        d = _driver()
+        d.run_js.return_value = _ARTICLES_JSON
+        articles = _articles_par_code(d)
+        assert sorted(articles) == ["588039", "588046", "782784"]
+        assert articles["588046"]["codeProvider"] == "G2F23030"
+
+    def test_attribut_absent(self):
+        d = _driver()
+        d.run_js.return_value = ""
+        assert _articles_par_code(d) == {}
+
+    def test_json_illisible(self):
+        d = _driver()
+        d.run_js.return_value = "{pas du json"
+        assert _articles_par_code(d) == {}
+
+    def test_js_en_echec(self):
+        d = _driver()
+        d.run_js.side_effect = Exception("no JS")
+        assert _articles_par_code(d) == {}
+
+
+class TestArticlePour:
+    def _articles(self):
+        return {a["code"]: a for a in json.loads(_ARTICLES_JSON)}
+
+    def test_trouve_par_code(self):
+        assert _article_pour(self._articles(), "782784")["codeProvider"] == "F23010"
+
+    def test_sans_json_rend_none(self):
+        """None = « on ne sait pas » : la valeur DOM en place doit être conservée."""
+        assert _article_pour({}, "588039") is None
+
+    def test_code_inconnu_sur_une_gamme(self):
+        """Pas de repli sur un voisin : mieux vaut aucune réf. qu'une réf. d'à côté."""
+        assert _article_pour(self._articles(), "999999") == {}
+
+    def test_repli_sur_l_unique_article(self):
+        articles = {"588039": json.loads(_ARTICLES_JSON)[0]}
+        assert _article_pour(articles, "autre-code")["codeProvider"] == "G2F23010"
+
+
+class TestAppliquerArticle:
+    def test_pose_ref_fabricant_et_statut(self):
+        row = {"Ref_fabricant": "G2F23010"}
+        _appliquer_article(row, {"codeProvider": "F23010", "state": "replaced"})
+        assert row["Ref_fabricant"] == "F23010"
+        assert row["productStatus"] == "replaced"
+
+    def test_none_laisse_la_ligne_intacte(self):
+        row = {"Ref_fabricant": "DOM-4932430859"}
+        _appliquer_article(row, None)
+        assert row["Ref_fabricant"] == "DOM-4932430859"
+        assert "productStatus" not in row
+
+    def test_article_sans_code_provider_vide_la_reference(self):
+        """Le fournisseur n'en publie pas : vide, jamais la référence de la page."""
+        row = {"Ref_fabricant": "G2F23010"}
+        _appliquer_article(row, {})
+        assert row["Ref_fabricant"] == ""
+
+
 # ─── _build_combo_row ────────────────────────────────────────────────────────
 
 class TestBuildComboRow:
@@ -447,12 +524,57 @@ class TestBuildComboRow:
         assert "Couleur" not in row.get("productDecliName&Value", "")
         assert "Taille=L" in row.get("productDecliName&Value", "")
 
+    def test_reference_fabricant_de_la_declinaison(self):
+        """La déclinaison prend SA réf. fabricant, pas celle recopiée de la page."""
+        base = {"productRef": "588039", "childRefs": "", "Ref_fabricant": "G2F23010"}
+        combo = self._combo(["782784", "16"])
+        articles = {a["code"]: a for a in json.loads(_ARTICLES_JSON)}
+        row = _build_combo_row(base, combo, ["Ref", "Diamètre"], "", str.strip, articles)
+        assert row["Ref_fabricant"] == "F23010"
+        assert row["productStatus"] == "replaced"
+
+    def test_sans_articles_conserve_la_valeur_dom(self):
+        base = {"productRef": "588039", "childRefs": "", "Ref_fabricant": "G2F23010"}
+        combo = self._combo(["782784", "16"])
+        row = _build_combo_row(base, combo, ["Ref", "Diamètre"], "", str.strip)
+        assert row["Ref_fabricant"] == "G2F23010"
+
 
 # ─── _build_rows ─────────────────────────────────────────────────────────────
 
 class TestBuildRows:
     def _base(self):
         return {"productRef": "100", "childRefs": "100"}
+
+    def _driver_avec_combos(self, nb):
+        d = _driver()
+        combos = []
+        for i in range(nb):
+            td = MagicMock()
+            td.text = str(100 + i)
+            combo = MagicMock()
+            combo.select_all.return_value = [td]
+            combos.append(combo)
+        appels = 0
+
+        def sel_side(_sel, _t):
+            nonlocal appels
+            appels += 1
+            return combos if appels == 1 else []
+
+        d.select_all.side_effect = sel_side
+        return d
+
+    def test_ean_de_page_efface_sur_les_declinaisons(self):
+        """Deux déclinaisons ne peuvent pas partager le code-barres de la page."""
+        base = {**self._base(), "EAN": "3660000000001"}
+        rows = _build_rows(self._driver_avec_combos(2), base, _SEL, str.strip)
+        assert [r["EAN"] for r in rows] == ["", ""]
+
+    def test_ean_conserve_si_ligne_unique(self):
+        base = {**self._base(), "EAN": "3660000000001"}
+        rows = _build_rows(self._driver_avec_combos(1), base, _SEL, str.strip)
+        assert rows[0]["EAN"] == "3660000000001"
 
     def test_returns_base_row_marked_false_when_no_combos(self):
         d = _driver()
