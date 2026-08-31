@@ -51,6 +51,22 @@ def _find_exact_match(ref_spans: list, result_links: list, ref) -> str | None:
     return None
 
 
+def _find_card_match(cards: list, ref) -> str | None:
+    """Return the URL of the card whose displayed reference exactly matches ref, or None."""
+    ref_str = str(ref)
+    for card in cards:
+        try:
+            ref_span = card.select(SELECTORS["ref_result"], 1)
+            if not ref_span or ref_span.text.strip() != ref_str:
+                continue
+            link_el = card.select(SELECTORS["search_result"], 1)
+            if link_el:
+                return _to_full_url(link_el.get_attribute("href"))
+        except Exception:
+            continue
+    return None
+
+
 def _find_product_url(driver, ref) -> str | None:
     """Type ref in the search bar and return the best-matching product URL.
 
@@ -66,14 +82,25 @@ def _find_product_url(driver, ref) -> str | None:
         print(f"   Aucun résultat pour : {ref}")
         return None
 
-    result_links = driver.select_all(SELECTORS["search_result"])
-    ref_spans    = driver.select_all(SELECTORS["ref_result"], 1)
+    cards = driver.select_all("div.c-article-search-card", 1)
+    if not cards:
+        result_links = driver.select_all(SELECTORS["search_result"])
+        ref_spans    = driver.select_all(SELECTORS["ref_result"], 1)
 
-    url = _find_exact_match(ref_spans, result_links, ref)
+        url = _find_exact_match(ref_spans, result_links, ref)
+        if url:
+            return url
+        if result_links:
+            return _to_full_url(result_links[0].get_attribute("href"))
+        print(f"   Référence introuvable : {ref}")
+        return None
+
+    url = _find_card_match(cards, ref)
     if url:
         return url
-    if result_links:
-        return _to_full_url(result_links[0].get_attribute("href"))
+    first_link = cards[0].select(SELECTORS["search_result"], 1) if cards else None
+    if first_link:
+        return _to_full_url(first_link.get_attribute("href"))
     print(f"   Référence introuvable : {ref}")
     return None
 
@@ -125,7 +152,10 @@ def _scrape_ref(scraper, driver, db_conn, ref, count: int) -> int | None:
 
         count += 1
         ref_found = rows[0].get("productRef", ref)
-        print(f"   ✓ {ref_found} — {len(rows)} ligne(s)")
+        if ref_found and ref_found != ref:
+            print(f"   ✓ {ref} (fiche: {ref_found}) — {len(rows)} ligne(s)")
+        else:
+            print(f"   ✓ {ref} — {len(rows)} ligne(s)")
         return count
 
     except Exception as exc:
