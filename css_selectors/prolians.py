@@ -32,7 +32,7 @@ class Selectors:
     # Ce n'est plus ``button#next`` — c'est ce qui bloquait la reconnexion.
     submit_button       = "button:has-text('Se connecter')"
     logged_in_check     = "button[aria-label='Mon compte']"      # Présent si connecté
-    logged_out_check    = "a[aria-label='Connectez-vous']"       # Présent si déconnecté
+    logged_out_check    = "a[href='/customer/account/login']"       # Présent si déconnecté
 
     # ─── Navigation générale ─────────────────────────────────────────────────
     cookie_acceptt       = "button[aria-label*='Accepter']"       # Variante courte bannière
@@ -110,6 +110,11 @@ class Selectors:
     cookie_accept       = "button[aria-label='Accepter & Fermer: Accepter notre traitement des données et fermer']"
     didomi_accept       = "#didomi-notice-agree-button"
     accept_all_xpath    = "//button[contains(., 'Tout accepter')]"
+    # Page adresses client — sélecteurs pour la suppression d'adresses (suppradrr)
+    addresses_url       = f"{BASE_URL}/customer/addresses"
+    address_card        = "div[data-testid='card']"
+    delete_address_btn  = "button[aria-label='Delete address']"
+    confirm_button      = "button[aria-label='Valider']"
 
     # Navigation vers la liste des commandes
     view_all_orders     = "a[aria-label='Voir toutes mes commandes']"

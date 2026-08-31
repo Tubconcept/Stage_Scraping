@@ -57,23 +57,23 @@ def suppr_addr(page: Page):
     page.wait_for_timeout(1000)
     anti_popup(page)
     # Chaque adresse est un bloc data-testid='card'
-    divs = page.locator("div[data-testid='card']").all()
+    divs = page.locator(Selectors.address_card).all()
 
     for div in divs[2:]:
-        page.wait_for_selector("button[aria-label='Supprimer mon adresse']")
-        delete_button = div.locator("button[aria-label='Supprimer mon adresse']")
+        page.wait_for_selector(Selectors.delete_address_btn, timeout=5000)
+        delete_button = div.locator(Selectors.delete_address_btn)
 
         if delete_button.is_visible():
             delete_button.click()
             # Modale de confirmation Magento / React
-            page.wait_for_selector("button[aria-label='Valider']", timeout=5000)
+            page.wait_for_selector(Selectors.confirm_button, timeout=5000)
 
-            accept_button = page.locator("button[aria-label='Valider']")
+            accept_button = page.locator(Selectors.confirm_button)
 
             if accept_button.is_visible():
                 accept_button.click()
                 # Délai pour laisser l'API supprimer l'adresse côté serveur
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(100000)
             else:
                 print("Bouton de confirmation non visible.")
         else:
@@ -96,7 +96,7 @@ def main():
             browser.close()
             return
 
-        page.goto(f"{BASE_URL}/customer/addresses")
+        page.goto(Selectors.addresses_url)
         # Attente initiale : chargement React des cartes adresse
         time.sleep(8)
         suppr_addr(page)

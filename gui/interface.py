@@ -30,6 +30,7 @@ from importlib import import_module
 from gui.journal import PontJournal
 from gui.site_config import SITES_CONFIG
 from core.config import CSV_HEADERS, ORDERS_CSV_HEADERS, TRACKING_CSV_HEADERS
+from core.logger import logger
 
 # ─── Couleurs ──────────────────────────────────────────────────────────────────
 BG        = "#FFFDE7"
