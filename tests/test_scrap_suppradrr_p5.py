@@ -2,7 +2,7 @@
 Tests unitaires pour scrapers/Setin_P5/deleting/scrap_suppradrr_p5.py
 
 Couvre :
-- Sauvegarde de session via asyncio.to_thread (fix SonarQube HIGH)
+- Sauvegarde de session via asyncio.to_thread (ne pas bloquer l'event loop)
 - Logique d'arrêt de suppr_addr (flag should_stop)
 - Import du module et instanciation du scraper GUI
 """
@@ -31,7 +31,7 @@ def _make_fake_context(storage_payload: dict) -> MagicMock:
     return ctx
 
 
-# ─── Tests : sauvegarde de session (fix SonarQube) ───────────────────────────
+# ─── Tests : sauvegarde de session (écriture hors event loop) ────────────────
 
 class TestSessionSave:
     """Vérifie que la sauvegarde de session utilise bien asyncio.to_thread
