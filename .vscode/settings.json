@@ -1,7 +1,3 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system",
-    "sonarlint.connectedMode.project": {
-        "connectionId": "tubconcept",
-        "projectKey": "Tubconcept_Stage_Scraping"
-    }
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }
